@@ -1,0 +1,89 @@
+import { openDB } from 'idb';
+
+const DB_NAME    = 'chronicle-mind-v1';
+const DB_VERSION = 2;          // bumped to add events store
+const ENTRIES    = 'entries';
+const EVENTS     = 'events';
+
+let db = null;
+
+async function getDB() {
+  if (db) return db;
+  db = await openDB(DB_NAME, DB_VERSION, {
+    upgrade(database, oldVersion) {
+      // ── v1: entries store (created on first install) ──
+      if (!database.objectStoreNames.contains(ENTRIES)) {
+        const store = database.createObjectStore(ENTRIES, { keyPath: 'id' });
+        store.createIndex('by-timestamp', 'timestamp');
+      }
+      // ── v2: events store ──
+      if (oldVersion < 2 && !database.objectStoreNames.contains(EVENTS)) {
+        const evStore = database.createObjectStore(EVENTS, { keyPath: 'id' });
+        evStore.createIndex('by-date',     'date');
+        evStore.createIndex('by-memoryId', 'memoryId');
+      }
+    }
+  });
+  return db;
+}
+
+// ── Entries ──────────────────────────────────────────────
+
+/** Save (or overwrite) an entry */
+export async function saveEntry(entry) {
+  const d = await getDB();
+  await d.put(ENTRIES, entry);
+}
+
+/** Load all entries sorted chronologically (oldest → newest) */
+export async function getAllEntries() {
+  const d = await getDB();
+  return d.getAllFromIndex(ENTRIES, 'by-timestamp');
+}
+
+/** Get a single entry by id */
+export async function getEntryById(id) {
+  const d = await getDB();
+  return d.get(ENTRIES, id);
+}
+
+/** Delete an entry */
+export async function deleteEntry(id) {
+  const d = await getDB();
+  await d.delete(ENTRIES, id);
+}
+
+// ── Events ───────────────────────────────────────────────
+
+/** Save an extracted life event */
+export async function saveEvent(event) {
+  const d = await getDB();
+  await d.put(EVENTS, event);
+}
+
+/** Update an existing event (same as saveEvent — put is upsert) */
+export async function updateEvent(event) {
+  const d = await getDB();
+  await d.put(EVENTS, event);
+}
+
+/** Delete a single event by id */
+export async function deleteEvent(id) {
+  const d = await getDB();
+  await d.delete(EVENTS, id);
+}
+
+/** Load all events sorted by date (oldest → newest) */
+export async function getAllEvents() {
+  const d = await getDB();
+  return d.getAllFromIndex(EVENTS, 'by-date');
+}
+
+/** Delete all events linked to a memory */
+export async function deleteEventsByMemoryId(memoryId) {
+  const d = await getDB();
+  const all = await d.getAllFromIndex(EVENTS, 'by-memoryId', memoryId);
+  const tx  = d.transaction(EVENTS, 'readwrite');
+  await Promise.all(all.map(e => tx.store.delete(e.id)));
+  await tx.done;
+}

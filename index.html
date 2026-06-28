@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Chronicle Mind — Your Personal Memory Vault</title>
+  <meta name="description" content="Capture your thoughts, record your voice, and discover patterns across your personal memory timeline — powered by on-device AI." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/src/style.css" />
+</head>
+<body>
+
+  <!-- ── Model Loading Overlay ─────────────────────── -->
+  <div id="model-overlay" class="model-overlay" aria-live="polite" role="status">
+    <div class="model-overlay-content">
+      <div class="model-brain" aria-hidden="true">🧠</div>
+      <h2>Loading AI Model</h2>
+      <p id="model-status-label">Initializing on-device embeddings...</p>
+      <div class="progress-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+        <div id="model-progress" class="progress-fill"></div>
+      </div>
+      <p class="model-note">✓ Runs entirely in your browser &nbsp;·&nbsp; First load only — cached after</p>
+    </div>
+  </div>
+
+
+
+  <!-- ── Main App ───────────────────────────────────── -->
+  <div id="app">
+
+    <!-- Header -->
+    <header class="app-header">
+      <div class="header-brand">
+        <span class="brand-icon" aria-hidden="true">🧠</span>
+        <span class="brand-name">Chronicle Mind</span>
+        <span class="brand-tagline" aria-hidden="true">Your thoughts, remembered</span>
+      </div>
+      <div class="header-actions">
+        <div id="model-status-badge" class="status-badge loading" aria-live="polite">
+          <span class="status-dot" aria-hidden="true"></span>
+          <span id="status-label-text">Loading AI…</span>
+        </div>
+      </div>
+    </header>
+
+    <!-- Main Layout -->
+    <main class="app-main">
+
+      <!-- ── Left: Capture Panel ───────────────────── -->
+      <section class="input-panel" aria-label="Capture your thoughts">
+
+        <div class="panel-card">
+          <h1 class="panel-title">Capture</h1>
+
+          <!-- Tabs -->
+          <div class="input-tabs" role="tablist" aria-label="Input mode">
+            <button class="tab active" id="tab-text" role="tab"
+              aria-selected="true" aria-controls="panel-text">
+              ✏️ Type
+            </button>
+            <button class="tab" id="tab-audio" role="tab"
+              aria-selected="false" aria-controls="panel-audio">
+              🎙️ Record
+            </button>
+          </div>
+
+          <!-- Text Panel -->
+          <div id="panel-text" class="tab-panel active" role="tabpanel" aria-labelledby="tab-text">
+            <textarea
+              id="thought-input"
+              class="thought-textarea"
+              placeholder="What's on your mind? A thought, idea, or reflection…"
+              rows="6"
+              dir="auto"
+              aria-label="Your thought"
+              spellcheck="true"
+            ></textarea>
+            <div class="char-count" id="char-count" aria-live="polite">0 characters</div>
+          </div>
+
+          <!-- Audio Panel -->
+          <div id="panel-audio" class="tab-panel" role="tabpanel" aria-labelledby="tab-audio">
+            <div class="recorder-area">
+              <canvas id="waveform-canvas" aria-hidden="true"></canvas>
+              <div class="recorder-controls">
+                <button id="record-btn" class="record-btn" aria-label="Start recording">
+                  <span class="record-icon" aria-hidden="true">●</span>
+                  <span id="record-label">Start Recording</span>
+                </button>
+                <span id="recording-timer" class="recording-timer" aria-live="polite" aria-label="Recording duration">0:00</span>
+              </div>
+            </div>
+
+            <!-- Transcribing indicator -->
+            <div id="transcribing-indicator" class="transcribing hidden" aria-live="polite">
+              <div class="spinner" aria-hidden="true"></div>
+              <span>Transcribing with Groq Whisper…</span>
+            </div>
+
+            <!-- Transcript preview -->
+            <div id="transcript-preview" class="transcript-preview hidden">
+              <div class="transcript-header">
+                <span class="transcript-label">📝 Transcript</span>
+                <div class="transcript-actions">
+                  <button id="edit-transcript" class="btn-link" aria-label="Edit transcript">Edit</button>
+                  <button id="discard-recording" class="btn-link btn-link-danger" aria-label="Discard recording">🗑 Discard</button>
+                </div>
+              </div>
+              <p id="transcript-text" class="transcript-content" dir="auto" contenteditable="false"></p>
+            </div>
+          </div>
+
+          <!-- Submit -->
+          <div class="submit-area">
+            <button id="submit-btn" class="btn btn-primary btn-full" disabled aria-label="Save memory">
+              <span id="submit-icon" aria-hidden="true">💾</span>
+              <span id="submit-label">Save Memory</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Related Memories (appears after save) -->
+        <div id="related-panel" class="panel-card related-panel hidden" aria-live="polite" aria-label="Related memories">
+          <h2 class="panel-title panel-title-sm">🔗 Related Memories</h2>
+          <p class="related-intro">Memories connected to what you just captured:</p>
+          <div id="related-list" class="related-list"></div>
+        </div>
+
+      </section>
+
+      <!-- ── Right: Views ──────────────────────── -->
+      <section class="timeline-panel" aria-label="Records and events">
+
+        <!-- View tab switcher -->
+        <div class="view-header">
+          <div class="view-tabs" role="tablist" aria-label="View">
+            <button class="view-tab active" id="vtab-memories" role="tab"
+              aria-selected="true" aria-controls="view-memories">
+              📝 Memories
+            </button>
+            <button class="view-tab" id="vtab-events" role="tab"
+              aria-selected="false" aria-controls="view-events">
+              📅 Life Events
+            </button>
+          </div>
+          <span id="entry-count" class="stat-badge" aria-live="polite">0 memories</span>
+        </div>
+
+        <!-- ── Memories view ──────────────────── -->
+        <div id="view-memories" class="panel-view active" role="tabpanel" aria-labelledby="vtab-memories">
+          <div id="timeline-empty" class="timeline-empty">
+            <div class="empty-icon" aria-hidden="true">✨</div>
+            <h3>No memories yet</h3>
+            <p>Start capturing thoughts to build your personal memory vault</p>
+          </div>
+          <div id="timeline-container" class="timeline-container hidden" aria-live="polite"></div>
+        </div>
+
+        <!-- ── Life Events view ───────────────── -->
+        <div id="view-events" class="panel-view hidden" role="tabpanel" aria-labelledby="vtab-events">
+          <div id="events-empty" class="timeline-empty">
+            <div class="empty-icon" aria-hidden="true">📅</div>
+            <h3>No life events yet</h3>
+            <p>When you mention dates in your memories ("last Wednesday I had an exam", "I was born on…"), they'll appear here as a personal timeline</p>
+          </div>
+          <div id="events-container" class="events-container hidden" aria-live="polite"></div>
+        </div>
+
+      </section>
+
+    </main>
+  </div>
+
+  <!-- Toast container -->
+  <div class="toast-container" id="toast-container" aria-live="assertive" aria-atomic="true"></div>
+
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>
