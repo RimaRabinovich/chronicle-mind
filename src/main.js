@@ -104,10 +104,7 @@ function onModelLoaded() {
   const overlay = $('model-overlay');
   overlay.classList.add('hidden');
 
-  // Update status badge
-  const badge = $('model-status-badge');
-  badge.className = 'status-badge ready';
-  $('status-label-text').textContent = 'AI Ready';
+  // Update status badge (badge removed from DOM)
 
   refreshSubmitBtn();
   showToast('AI model loaded — ready to capture memories!', 'success');
@@ -233,7 +230,9 @@ async function startRecording() {
     await recorder.start();
 
     $('record-btn').classList.add('recording');
-    $('record-label').textContent = 'Stop Recording';
+    $('record-btn').innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="currentColor" stroke="none" class="lucide lucide-square"><rect width="18" height="18" x="3" y="3" rx="2"/></svg>';
+    $('record-subtext').textContent = 'Recording… tap to stop and transcribe';
+    $('waveform-canvas').style.display = 'block';
 
     recSeconds = 0;
     updateTimer();
@@ -255,7 +254,9 @@ async function stopRecording() {
   recSeconds = 0;
   updateTimer();
   $('record-btn').classList.remove('recording');
-  $('record-label').textContent = 'Start Recording';
+  $('record-btn').innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-mic"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" x2="12" y1="19" y2="22"/></svg>';
+  $('record-subtext').textContent = 'Tap to start a voice memory';
+  $('waveform-canvas').style.display = 'none';
 
   audioBlob = await recorder.stop();
 
@@ -307,10 +308,8 @@ async function handleSubmit() {
 
   // ── Loading state ──
   const btn   = $('submit-btn');
-  const icon  = $('submit-icon');
   const label = $('submit-label');
   btn.disabled  = true;
-  icon.textContent  = '⏳';
   label.textContent = 'Embedding…';
 
   try {
@@ -330,7 +329,8 @@ async function handleSubmit() {
 
     // 3. Build & save entry
     const entry = { id, timestamp, type: currentMode === 'audio' ? 'audio' : 'text',
-                    content, embedding, audioData, audioMimeType };
+                    content, embedding, audioData, audioMimeType,
+                    duration: currentMode === 'audio' ? recSeconds : null };
     await saveEntry(entry);
     await loadEntries();
 
@@ -367,8 +367,7 @@ async function handleSubmit() {
     showToast(`Error: ${err.message}`, 'error');
     console.error(err);
   } finally {
-    icon.textContent  = '💾';
-    label.textContent = 'Save Memory';
+    label.textContent = 'Save memory';
     refreshSubmitBtn();
   }
 }
@@ -436,14 +435,23 @@ function renderTimeline() {
   const sorted  = [...entries].reverse();
   const grouped = groupByDay(sorted);
 
+  let cardIdx = 1;
   for (const [dayLabel, dayEntries] of grouped) {
     const group = document.createElement('div');
     group.className = 'timeline-day-group';
-    group.innerHTML = `<div class="timeline-day-label">${dayLabel}</div>`;
+    group.innerHTML = `
+      <div class="timeline-day-header">
+        <span class="timeline-day-title">${dayLabel.toUpperCase()}</span>
+        <div class="timeline-day-line"></div>
+        <span class="timeline-day-count">${dayEntries.length}</span>
+      </div>
+    `;
 
     const entriesWrap = document.createElement('div');
     entriesWrap.className = 'timeline-entries';
-    dayEntries.forEach(e => entriesWrap.appendChild(buildEntryCard(e)));
+    dayEntries.forEach(e => {
+      entriesWrap.appendChild(buildEntryCard(e, cardIdx++));
+    });
     group.appendChild(entriesWrap);
     container.appendChild(group);
   }
@@ -451,55 +459,82 @@ function renderTimeline() {
   updateCountBadge();
 }
 
-function buildEntryCard(entry) {
+function generateWaveformHTML(id, seed) {
+  let html = `<div class="waveform-container" id="wave-${id}">`;
+  const numSeed = typeof seed === 'number' ? seed : (new Date(seed).getTime() || 1);
+  let x = (numSeed % 233280) * 9301 + 49297;
+  const count = 48; // matches visual scale
+  for (let i = 0; i < count; i++) {
+    x = (x * 9301 + 49297) % 233280;
+    const r = x / 233280;
+    const h = Math.round((0.2 + r * 0.8) * 100);
+    html += `<span class="wave-bar" style="height: ${h}%"></span>`;
+  }
+  html += `</div>`;
+  return html;
+}
+
+function buildEntryCard(entry, displayIndex) {
   const card = document.createElement('article');
   card.className = `entry-card ${entry.type === 'audio' ? 'audio-entry' : ''}`;
   card.id = `entry-${entry.id}`;
 
   const time  = formatTime(entry.timestamp);
+  const indexStr = displayIndex ? displayIndex.toString().padStart(2, '0') : '';
+
   const badge = entry.type === 'audio'
-    ? '<span class="entry-type-badge entry-type-audio">🎙 Audio</span>'
-    : '<span class="entry-type-badge entry-type-text">📝 Text</span>';
+    ? '<span class="entry-type-badge entry-type-audio" style="display:inline-flex;align-items:center;gap:4px;"><svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-mic"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" x2="12" y1="19" y2="22"/></svg>VOICE</span>'
+    : '<span class="entry-type-badge entry-type-text" style="display:inline-flex;align-items:center;gap:4px;"><svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-file-text"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/></svg>TEXT</span>';
 
   let audioHTML = '';
   if (entry.audioData) {
+    const durationText = entry.duration ? fmtSecs(entry.duration) : '--:--';
     audioHTML = `
       <audio id="aud-${entry.id}" src="${entry.audioData}" preload="auto"></audio>
       <div class="audio-player" id="player-${entry.id}">
-        <button class="audio-play-btn" data-audio-id="${entry.id}" aria-label="Play recording">▶</button>
+        <button class="audio-play-btn" data-audio-id="${entry.id}" aria-label="Play recording"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-play"><polygon points="6 3 20 12 6 21 6 3"/></svg></button>
         <div class="player-timeline">
-          <span class="player-time" id="cur-${entry.id}">0:00</span>
           <div class="player-scrubber-wrap">
-            <div class="scrubber-track">
-              <div class="scrubber-fill" id="fill-${entry.id}"></div>
-            </div>
+            ${generateWaveformHTML(entry.id, entry.timestamp ? new Date(entry.timestamp).getTime() : Date.now())}
             <input class="player-scrubber" id="scrub-${entry.id}"
-              type="range" min="0" max="100" step="0.01" value="0"
+              type="range" min="0" max="${entry.duration || 100}" step="0.01" value="0"
               aria-label="Seek through recording" />
           </div>
-          <span class="player-time" id="dur-${entry.id}">--:--</span>
         </div>
-        <button class="player-speed-btn" data-speed-id="${entry.id}" aria-label="Playback speed">1×</button>
+        <div class="player-controls-right" style="display: flex; align-items: center; gap: 8px; flex-shrink: 0;">
+          <span class="player-time" id="time-display-${entry.id}">0:00 / ${durationText}</span>
+          <button class="player-speed-btn" data-speed-id="${entry.id}" aria-label="Playback speed">1×</button>
+        </div>
       </div>
     `;
   }
 
   const hasSummary = !!entry.summary;
   const summaryHTML = hasSummary
-    ? `<div class="summary-box" id="sum-${entry.id}">${esc(entry.summary)}</div>`
+    ? `<div class="summary-box" id="sum-${entry.id}">
+         <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-sparkles" style="color: var(--purple); flex-shrink: 0; margin-top: 2px;"><path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275Z"/><path d="m5 3 1 2.5L8.5 6 6 7 5 9.5 4 7 1.5 6 4 5Z"/><path d="m19 17 1 2.5 2.5.5-2.5 1-1 2.5-1-2.5-2.5-1 2.5-1Z"/></svg>
+         <span>${esc(entry.summary)}</span>
+       </div>`
     : `<div class="summary-box hidden" id="sum-${entry.id}"></div>`;
 
   card.innerHTML = `
     <div class="entry-meta">
-      <span class="entry-time">${time}</span>
-      ${badge}
-      <button class="entry-delete-btn" data-delete-id="${entry.id}" aria-label="Delete memory" title="Delete memory">🗑</button>
+      <div class="entry-meta-left">
+        ${badge}
+        <span class="entry-time">${time}</span>
+      </div>
+      <div class="entry-meta-right">
+        <button class="entry-delete-btn" data-delete-id="${entry.id}" aria-label="Delete memory" title="Delete memory"><svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-trash-2"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><line x1="10" x2="10" y1="11" y2="17"/><line x1="14" x2="14" y1="11" y2="17"/></svg></button>
+        <span class="entry-index">${indexStr}</span>
+      </div>
     </div>
     <p class="entry-content" dir="auto">${esc(entry.content)}</p>
     ${audioHTML}
-    <button class="summarize-btn ${hasSummary ? 'has-summary' : ''}" data-summarize-id="${entry.id}" aria-label="Summarize">
-      ✦ ${hasSummary ? 'Summary' : 'Summarize'}
-    </button>
+    ${hasSummary ? '' : `
+      <button class="summarize-btn" data-summarize-id="${entry.id}" aria-label="Summarize">
+        + Summary
+      </button>
+    `}
     ${summaryHTML}
   `;
 
@@ -507,24 +542,42 @@ function buildEntryCard(entry) {
   if (entry.audioData) {
     const aud  = card.querySelector(`#aud-${entry.id}`);
     const scrub = card.querySelector(`#scrub-${entry.id}`);
-    const fill  = card.querySelector(`#fill-${entry.id}`);
-    const cur   = card.querySelector(`#cur-${entry.id}`);
-    const dur   = card.querySelector(`#dur-${entry.id}`);
+    const timeDisplay = card.querySelector(`#time-display-${entry.id}`);
+    const bars = card.querySelectorAll(`#wave-${entry.id} .wave-bar`);
 
     function setFill(pct) {
-      fill.style.width = `${Math.max(0, Math.min(100, pct))}%`;
+      const activeCount = Math.floor((pct / 100) * bars.length);
+      bars.forEach((bar, index) => {
+        if (index <= activeCount) {
+          bar.classList.add('active');
+        } else {
+          bar.classList.remove('active');
+        }
+      });
     }
 
     function applyDuration() {
-      if (isFinite(aud.duration) && aud.duration > 0) {
-        dur.textContent = fmtSecs(aud.duration);
-        scrub.max = aud.duration;
+      const dur = (isFinite(aud.duration) && aud.duration > 0) ? aud.duration : entry.duration;
+      if (dur) {
+        timeDisplay.textContent = `${fmtSecs(aud.currentTime)} / ${fmtSecs(dur)}`;
+        scrub.max = dur;
       }
     }
 
     // loadedmetadata + durationchange cover all browser/data-URL timing cases
-    aud.addEventListener('loadedmetadata', applyDuration);
-    aud.addEventListener('durationchange',  applyDuration);
+    aud.addEventListener('loadedmetadata', () => {
+      if (aud.duration === Infinity) {
+        aud.currentTime = 1e9;
+        aud.ontimeupdate = () => {
+          aud.ontimeupdate = null;
+          aud.currentTime = 0;
+          applyDuration();
+        };
+      } else {
+        applyDuration();
+      }
+    });
+    aud.addEventListener('durationchange', applyDuration);
 
     // If already parsed (data URL may load synchronously in some browsers)
     if (aud.readyState >= 1) applyDuration();
@@ -532,28 +585,29 @@ function buildEntryCard(entry) {
     setTimeout(() => { if (!isFinite(aud.duration) || aud.duration === 0) aud.load(); }, 0);
 
     aud.addEventListener('timeupdate', () => {
-      cur.textContent = fmtSecs(aud.currentTime);
-      if (aud.duration) {
+      const dur = (isFinite(aud.duration) && aud.duration > 0) ? aud.duration : entry.duration;
+      if (dur) {
+        timeDisplay.textContent = `${fmtSecs(aud.currentTime)} / ${fmtSecs(dur)}`;
         scrub.value = aud.currentTime;
-        setFill((aud.currentTime / aud.duration) * 100);
+        setFill((aud.currentTime / dur) * 100);
       }
     });
 
     aud.addEventListener('ended', () => {
       const btn = card.querySelector(`[data-audio-id="${entry.id}"]`);
-      if (btn) btn.textContent = '▶';
+      if (btn) btn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-play"><polygon points="6 3 20 12 6 21 6 3"/></svg>';
       scrub.value = 0;
       setFill(0);
-      cur.textContent = '0:00';
+      const dur = (isFinite(aud.duration) && aud.duration > 0) ? aud.duration : entry.duration;
+      timeDisplay.textContent = `0:00 / ${fmtSecs(dur)}`;
     });
 
     scrub.addEventListener('input', () => {
       aud.currentTime = Number(scrub.value);
-      if (aud.duration) setFill((Number(scrub.value) / aud.duration) * 100);
+      const dur = (isFinite(aud.duration) && aud.duration > 0) ? aud.duration : entry.duration;
+      if (dur) setFill((Number(scrub.value) / dur) * 100);
     });
   }
-
-
 
   return card;
 }
@@ -595,13 +649,17 @@ function setupEntryInteractions() {
       if (aud.paused) {
         // Pause any other playing audio
         document.querySelectorAll('audio').forEach(a => { if (a !== aud) { a.pause(); } });
-        document.querySelectorAll('[data-audio-id]').forEach(b => { b.textContent = '▶'; });
+        document.querySelectorAll('[data-audio-id]').forEach(b => {
+          b.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-play"><polygon points="6 3 20 12 6 21 6 3"/></svg>';
+        });
         aud.play();
-        playBtn.textContent = '⏸';
-        aud.onended = () => { playBtn.textContent = '▶'; };
+        playBtn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-pause"><rect width="4" height="16" x="14" y="4" rx="1"/><rect width="4" height="16" x="6" y="4" rx="1"/></svg>';
+        aud.onended = () => {
+          playBtn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-play"><polygon points="6 3 20 12 6 21 6 3"/></svg>';
+        };
       } else {
         aud.pause();
-        playBtn.textContent = '▶';
+        playBtn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-play"><polygon points="6 3 20 12 6 21 6 3"/></svg>';
       }
     }
 
@@ -784,17 +842,18 @@ function buildEventCard(ev) {
     <!-- ── View mode ── -->
     <div class="event-view">
       <div class="event-card-actions">
-        <div class="event-date-badge">📅 ${dateStr}, ${year}</div>
+        <div class="event-date-badge" style="display:inline-flex;align-items:center;gap:4px;"><svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-calendar-days"><rect width="18" height="18" x="3" y="4" rx="2" ry="2"/><line x1="16" x2="16" y1="2" y2="6"/><line x1="8" x2="8" y1="2" y2="6"/><line x1="3" x2="21" y1="10" y2="10"/><path d="M8 14h.01"/><path d="M12 14h.01"/><path d="M16 14h.01"/><path d="M8 18h.01"/><path d="M12 18h.01"/><path d="M16 18h.01"/></svg>${dateStr}, ${year}</div>
         <div class="event-action-btns">
-          <button class="event-edit-btn" data-edit-event="${ev.id}" aria-label="Edit event" title="Edit">✏️</button>
-          <button class="event-delete-btn" data-delete-event="${ev.id}" aria-label="Delete event" title="Delete">🗑</button>
+          <button class="event-edit-btn" data-edit-event="${ev.id}" aria-label="Edit event" title="Edit"><svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-pen-line"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/><path d="m15 5 3 3"/></svg></button>
+          <button class="event-delete-btn" data-delete-event="${ev.id}" aria-label="Delete event" title="Delete"><svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-trash-2"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><line x1="10" x2="10" y1="11" y2="17"/><line x1="14" x2="14" y1="11" y2="17"/></svg></button>
         </div>
       </div>
       <div class="event-title" dir="auto">${esc(ev.title)}</div>
       <p class="event-description" dir="auto">${esc(ev.description)}</p>
       <div class="event-source" data-source-memory="${ev.memoryId}" role="button" tabindex="0" title="Jump to memory">
-        <span class="event-source-arrow">↗</span>
-        <span>From memory:</span>
+        <span class="event-source-arrow" style="display:inline-flex;align-items:center;"><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-arrow-up-right"><path d="M7 7h10v10"/><path d="M7 17 17 7"/></svg></span>
+        <span class="event-source-label">FROM MEMORY</span>
+        <span class="event-source-divider">/</span>
         <span class="event-source-text">${esc(ev.memorySnippet)}…</span>
       </div>
     </div>
