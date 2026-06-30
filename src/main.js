@@ -11,11 +11,12 @@
  */
 
 import './style.css';
-import { saveEntry, getAllEntries, deleteEntry, saveEvent, updateEvent, deleteEvent, getAllEvents, deleteEventsByMemoryId } from './db.js';
+import { saveEntry, getAllEntries, deleteEntry, saveEvent, updateEvent, deleteEvent, getAllEvents, deleteEventsByMemoryId, setCurrentUser } from './db.js';
 import { findSimilar }               from './embeddings.js';
 import { transcribeAudio }           from './transcription.js';
 import { AudioRecorder }             from './recorder.js';
 import { summarizeContent, extractEvents } from './ai.js';
+import { initAuth, signInWithGoogle, signOutUser, onAuthChange } from './auth.js';
 
 // ── DOM helpers ────────────────────────────────────────
 const $ = (id) => document.getElementById(id);
@@ -35,7 +36,10 @@ const audioURLs   = new Map();   // entry.id → ObjectURL (lazy)
 const eventsCache = new Map();   // event.id → event object (for edit handler)
 let   eventsCount = 0;           // kept in sync by renderEventsTimeline
 
+let   pendingEvents = [];        // holds extracted events before user approval
+
 // ── Boot ───────────────────────────────────────────────
+/** Called once after a user is confirmed signed-in */
 async function init() {
   await loadEntries();
   renderTimeline();
@@ -45,7 +49,98 @@ async function init() {
   setupSubmit();
   setupEntryInteractions();
   setupEventsInteractions();
+  setupPendingEvents();
   startEmbedderWorker();
+}
+
+/** Boot the auth layer then gate on sign-in */
+function bootAuth() {
+  initAuth();
+
+  // Sign-in button on the login screen
+  $('login-google-btn').addEventListener('click', async () => {
+    $('login-google-btn').disabled = true;
+    $('login-google-btn').textContent = 'Signing in…';
+    hideLoginError();
+    try {
+      await signInWithGoogle();
+    } catch (err) {
+      console.error('Google sign-in failed', err);
+      showLoginError(err.code === 'auth/popup-closed-by-user'
+        ? 'Sign-in was cancelled. Please try again.'
+        : `Sign-in error: ${err.message}`);
+      $('login-google-btn').disabled = false;
+      $('login-google-btn').innerHTML = googleBtnHTML();
+    }
+  });
+
+  // Sign-out button in the header
+  $('signout-btn').addEventListener('click', async () => {
+    await signOutUser();
+    // Reset in-memory state so re-login starts fresh
+    entries = [];
+    eventsCount = 0;
+    pendingEvents = [];
+    eventsCache.clear();
+    audioURLs.clear();
+    if (embedderWorker) { embedderWorker.terminate(); embedderWorker = null; }
+    embedderReady = false;
+  });
+
+  // Auth state subscriber — single source of truth
+  onAuthChange(async (user) => {
+    if (user) {
+      // User is signed in
+      setCurrentUser(user.uid);
+      showApp(user);
+      await init();
+    } else {
+      // User signed out
+      showLogin();
+    }
+  });
+}
+
+function showLoginError(msg) {
+  const el = $('login-error');
+  if (!el) return;
+  el.textContent = msg;
+  el.classList.remove('hidden');
+}
+
+function hideLoginError() {
+  const el = $('login-error');
+  if (el) el.classList.add('hidden');
+}
+
+function showApp(user) {
+  $('login-screen').classList.add('hidden');
+  $('app').classList.remove('hidden');
+  // Update avatar/name in header
+  const avatar = $('user-avatar');
+  const name   = $('user-name');
+  if (avatar) {
+    if (user.photoURL) {
+      avatar.style.backgroundImage = `url('${user.photoURL}')`;
+      avatar.textContent = '';
+    } else {
+      avatar.textContent = (user.displayName || user.email || '?')[0].toUpperCase();
+    }
+  }
+  if (name) name.textContent = user.displayName || user.email || '';
+}
+
+function showLogin() {
+  $('login-screen').classList.remove('hidden');
+  $('app').classList.add('hidden');
+  // Reset login button
+  const btn = $('login-google-btn');
+  if (btn) { btn.disabled = false; btn.innerHTML = googleBtnHTML(); }
+}
+
+function googleBtnHTML() {
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 48 48"><path fill="#4285F4" d="M44.5 20H24v8.5h11.9C34.5 33.5 30 37 24 37c-7.2 0-13-5.8-13-13s5.8-13 13-13c3.1 0 6 1.1 8.1 3l6.2-6.2C34.9 5.2 29.8 3 24 3 12.4 3 3 12.4 3 24s9.4 21 21 21c10.8 0 20-7.8 20-19.4 0-1.3-.2-2.7-.5-4z"/><path fill="#34A853" d="M6.3 14.7l7 5.1C15 17 19.2 14 24 14c3.1 0 6 1.1 8.1 3l6.2-6.2C34.9 5.2 29.8 3 24 3 16.4 3 9.9 7.9 6.3 14.7z"/><path fill="#FBBC04" d="M24 45c5.8 0 10.9-2 14.6-5.3l-6.8-5.5C29.9 35.9 27.1 37 24 37c-5.9 0-10.9-4-12.6-9.4l-6.9 5.3C8.1 40.1 15.5 45 24 45z"/><path fill="#EA4335" d="M44.5 20H24v8.5h11.9c-.9 2.6-2.7 4.8-5.1 6.2l6.8 5.5C41.4 36.8 45 31 45 24c0-1.3-.2-2.7-.5-4z"/></svg>
+  Continue with Google`;
 }
 
 // ── DB ─────────────────────────────────────────────────
@@ -765,8 +860,9 @@ async function extractAndSaveEvents(memoryId, content) {
 
   try {
     const events = await extractEvents(content, key);
+    let foundNew = false;
     for (const ev of events) {
-      await saveEvent({
+      pendingEvents.push({
         id:            crypto.randomUUID(),
         memoryId,
         date:          ev.date,
@@ -774,9 +870,10 @@ async function extractAndSaveEvents(memoryId, content) {
         description:   ev.description,
         memorySnippet: content.slice(0, 100)
       });
+      foundNew = true;
     }
-    if (events.length > 0) {
-      showToast(`📅 ${events.length} life event${events.length > 1 ? 's' : ''} added to your timeline!`, 'info');
+    if (foundNew) {
+      showPendingEventsModal();
     }
   } catch {
     // Silent fail — event extraction is best-effort
@@ -978,6 +1075,109 @@ function setupEventsInteractions() {
   });
 }
 
+// ── Pending Events UI ──────────────────────────────────
+function setupPendingEvents() {
+  $('close-pending-btn').addEventListener('click', hidePendingEventsModal);
+  $('approve-all-pending-btn').addEventListener('click', async () => {
+    // Save all pending events
+    for (const ev of pendingEvents) {
+      // Re-read inputs if they were edited inline
+      const card = $(`pending-card-${ev.id}`);
+      if (card) {
+        ev.title = card.querySelector('.pending-title').value.trim();
+        ev.date = card.querySelector('.pending-date').value.trim();
+        ev.description = card.querySelector('.pending-event-desc').value.trim();
+      }
+      if (ev.title && ev.date) await saveEvent(ev);
+    }
+    pendingEvents = [];
+    hidePendingEventsModal();
+    if ($('vtab-events').classList.contains('active')) {
+      await renderEventsTimeline();
+    } else {
+      eventsCount += pendingEvents.length;
+      updateCountBadge();
+    }
+    showToast('All pending life events approved!', 'success');
+  });
+
+  $('pending-events-list').addEventListener('click', async (e) => {
+    const approveBtn = e.target.closest('.btn-approve');
+    const rejectBtn = e.target.closest('.btn-reject');
+    
+    if (approveBtn) {
+      const id = approveBtn.dataset.id;
+      const evIndex = pendingEvents.findIndex(ev => ev.id === id);
+      if (evIndex > -1) {
+        const ev = pendingEvents[evIndex];
+        const card = $(`pending-card-${id}`);
+        ev.title = card.querySelector('.pending-title').value.trim();
+        ev.date = card.querySelector('.pending-date').value.trim();
+        ev.description = card.querySelector('.pending-event-desc').value.trim();
+        
+        if (!ev.title || !ev.date) {
+          showToast('Date and title are required.', 'error');
+          return;
+        }
+        
+        await saveEvent(ev);
+        pendingEvents.splice(evIndex, 1);
+        renderPendingEvents();
+        
+        if (pendingEvents.length === 0) hidePendingEventsModal();
+        
+        if ($('vtab-events').classList.contains('active')) {
+          await renderEventsTimeline();
+        } else {
+          eventsCount++;
+          updateCountBadge();
+        }
+        showToast('Life event approved!', 'success');
+      }
+    }
+    
+    if (rejectBtn) {
+      const id = rejectBtn.dataset.id;
+      const evIndex = pendingEvents.findIndex(ev => ev.id === id);
+      if (evIndex > -1) {
+        pendingEvents.splice(evIndex, 1);
+        renderPendingEvents();
+        if (pendingEvents.length === 0) hidePendingEventsModal();
+      }
+    }
+  });
+}
+
+function showPendingEventsModal() {
+  renderPendingEvents();
+  $('pending-events-modal').classList.remove('hidden');
+}
+
+function hidePendingEventsModal() {
+  $('pending-events-modal').classList.add('hidden');
+}
+
+function renderPendingEvents() {
+  const container = $('pending-events-list');
+  if (pendingEvents.length === 0) {
+    container.innerHTML = '<p style="color:var(--text-2);">No pending events.</p>';
+    return;
+  }
+  
+  container.innerHTML = pendingEvents.map(ev => `
+    <div class="pending-event-card" id="pending-card-${ev.id}">
+      <div class="pending-event-row">
+        <input type="text" class="pending-title" value="${esc(ev.title)}" placeholder="Event Title" />
+        <input type="text" class="pending-date" value="${esc(ev.date)}" placeholder="Date (e.g., 2026-03)" />
+      </div>
+      <textarea class="pending-event-desc" placeholder="Description">${esc(ev.description || '')}</textarea>
+      <div class="pending-event-actions">
+        <button class="btn btn-sm btn-reject" data-id="${ev.id}">Delete</button>
+        <button class="btn btn-sm btn-approve" data-id="${ev.id}">Approve</button>
+      </div>
+    </div>
+  `).join('');
+}
 
 // ── Utilities ──────────────────────────────────────────
 function groupByDay(sortedEntries) {
@@ -1044,4 +1244,4 @@ function showToast(message, type = 'info') {
 }
 
 // ── Start ──────────────────────────────────────────────
-init().catch(console.error);
+bootAuth();

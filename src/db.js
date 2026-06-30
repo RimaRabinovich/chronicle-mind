@@ -1,17 +1,33 @@
 import { openDB } from 'idb';
 
-const DB_NAME    = 'chronicle-mind-v1';
-const DB_VERSION = 2;          // bumped to add events store
+const DB_VERSION = 2;          // entries + events stores
 const ENTRIES    = 'entries';
 const EVENTS     = 'events';
 
-let db = null;
+// ── User-scoped DB ───────────────────────────────────────
+// The DB name is derived from the signed-in user's UID so each
+// user gets completely isolated storage on the same device.
+
+let currentUserId = null;
+let db = null;              // cached connection (reset on user change)
+
+/** Call this once Firebase reports a signed-in user. */
+export function setCurrentUser(uid) {
+  if (uid === currentUserId) return;   // no-op if same user
+  currentUserId = uid;
+  db = null;                           // force re-open for new uid
+}
+
+function dbName() {
+  if (!currentUserId) throw new Error('No user logged in — cannot open DB');
+  return `chronicle-mind-${currentUserId}`;
+}
 
 async function getDB() {
   if (db) return db;
-  db = await openDB(DB_NAME, DB_VERSION, {
+  db = await openDB(dbName(), DB_VERSION, {
     upgrade(database, oldVersion) {
-      // ── v1: entries store (created on first install) ──
+      // ── v1: entries store ──
       if (!database.objectStoreNames.contains(ENTRIES)) {
         const store = database.createObjectStore(ENTRIES, { keyPath: 'id' });
         store.createIndex('by-timestamp', 'timestamp');

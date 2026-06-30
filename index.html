@@ -12,23 +12,65 @@
 </head>
 <body>
 
-  <!-- ── Model Loading Overlay ─────────────────────── -->
-  <div id="model-overlay" class="model-overlay" aria-live="polite" role="status">
-    <div class="model-overlay-content">
-      <div class="model-brain" aria-hidden="true">🧠</div>
-      <h2>Loading AI Model</h2>
-      <p id="model-status-label">Initializing on-device embeddings...</p>
-      <div class="progress-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
-        <div id="model-progress" class="progress-fill"></div>
+
+
+  <!-- ── Login Screen ─────────────────────────────────── -->
+  <div id="login-screen" class="login-screen" role="main" aria-label="Sign in to Chronicle Mind">
+    <div class="login-card">
+      <div class="login-brand">
+        <span class="login-brand-icon" aria-hidden="true">
+          <svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18Z"/><path d="M12 5a3 3 0 1 1 5.997.125 4 4 0 0 1 2.526 5.77 4 4 0 0 1-.556 6.588A4 4 0 1 1 12 18Z"/><path d="M9 13a3 3 0 1 0 6 0a3 3 0 1 0-6 0"/><path d="M12 10v3"/><path d="M12 13v3"/><path d="M9 13h6"/></svg>
+        </span>
+        <h1 class="login-title">Chronicle Mind</h1>
+        <p class="login-subtitle">Your personal AI-powered memory vault</p>
       </div>
-      <p class="model-note">✓ Runs entirely in your browser &nbsp;·&nbsp; First load only — cached after</p>
+
+      <div class="login-features">
+        <div class="login-feature">
+          <span class="login-feature-icon">🧠</span>
+          <span>AI-powered memory search &amp; summaries</span>
+        </div>
+        <div class="login-feature">
+          <span class="login-feature-icon">🎙️</span>
+          <span>Voice recordings with transcription</span>
+        </div>
+        <div class="login-feature">
+          <span class="login-feature-icon">📅</span>
+          <span>Personal life events timeline</span>
+        </div>
+        <div class="login-feature">
+          <span class="login-feature-icon">🔒</span>
+          <span>Your data stays private on your device</span>
+        </div>
+      </div>
+
+      <button id="login-google-btn" class="login-google-btn" aria-label="Sign in with Google">
+        <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 48 48"><path fill="#4285F4" d="M44.5 20H24v8.5h11.9C34.5 33.5 30 37 24 37c-7.2 0-13-5.8-13-13s5.8-13 13-13c3.1 0 6 1.1 8.1 3l6.2-6.2C34.9 5.2 29.8 3 24 3 12.4 3 3 12.4 3 24s9.4 21 21 21c10.8 0 20-7.8 20-19.4 0-1.3-.2-2.7-.5-4z"/><path fill="#34A853" d="M6.3 14.7l7 5.1C15 17 19.2 14 24 14c3.1 0 6 1.1 8.1 3l6.2-6.2C34.9 5.2 29.8 3 24 3 16.4 3 9.9 7.9 6.3 14.7z"/><path fill="#FBBC04" d="M24 45c5.8 0 10.9-2 14.6-5.3l-6.8-5.5C29.9 35.9 27.1 37 24 37c-5.9 0-10.9-4-12.6-9.4l-6.9 5.3C8.1 40.1 15.5 45 24 45z"/><path fill="#EA4335" d="M44.5 20H24v8.5h11.9c-.9 2.6-2.7 4.8-5.1 6.2l6.8 5.5C41.4 36.8 45 31 45 24c0-1.3-.2-2.7-.5-4z"/></svg>
+        Continue with Google
+      </button>
+
+      <p id="login-error" class="login-error hidden"></p>
+
+      <p class="login-legal">By signing in, you agree to our terms. Your memories are stored locally on this device.</p>
     </div>
   </div>
 
-
-
   <!-- ── Main App ───────────────────────────────────── -->
-  <div id="app">
+
+  <div id="app" class="hidden">
+
+    <!-- ── Model Loading Overlay ───────────────────── -->
+    <div id="model-overlay" class="model-overlay" aria-live="polite" role="status">
+      <div class="model-overlay-content">
+        <div class="model-brain" aria-hidden="true">🧠</div>
+        <h2>Loading AI Model</h2>
+        <p id="model-status-label">Initializing on-device embeddings...</p>
+        <div class="progress-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+          <div id="model-progress" class="progress-fill"></div>
+        </div>
+        <p class="model-note">✓ Runs entirely in your browser &nbsp;·&nbsp; First load only — cached after</p>
+      </div>
+    </div>
 
     <!-- Header -->
     <header class="app-header">
@@ -38,6 +80,15 @@
         </span>
         <span class="brand-name">Chronicle Mind</span>
         <span class="brand-tagline" aria-hidden="true">Your thoughts, remembered</span>
+      </div>
+      <!-- User info + sign-out -->
+      <div class="header-user" aria-label="User account">
+        <div class="user-avatar" id="user-avatar" aria-hidden="true"></div>
+        <span id="user-name" class="user-name"></span>
+        <button id="signout-btn" class="signout-btn" aria-label="Sign out">
+          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" x2="9" y1="12" y2="12"/></svg>
+          Sign out
+        </button>
       </div>
     </header>
 
@@ -50,7 +101,6 @@
         <div class="panel-card">
           <div class="panel-card-header">
             <span class="panel-card-title">CAPTURE</span>
-            <span class="panel-card-number" id="capture-panel-number">01</span>
           </div>
           <div class="panel-card-body">
             <!-- Tabs -->
@@ -189,6 +239,31 @@
 
   <!-- Toast container -->
   <div class="toast-container" id="toast-container" aria-live="assertive" aria-atomic="true"></div>
+
+  <!-- Pending Events Modal -->
+  <div id="pending-events-modal" class="modal hidden" aria-live="polite" role="dialog" aria-modal="true" aria-labelledby="pending-events-title">
+    <div class="modal-backdrop"></div>
+    <div class="modal-content pending-events-modal-content">
+      <div class="modal-header">
+        <h2 id="pending-events-title" class="modal-title" style="display:flex;align-items:center;gap:6px;">
+          <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-calendar-plus"><path d="M8 2v4"/><path d="M16 2v4"/><rect width="18" height="18" x="3" y="4" rx="2"/><path d="M3 10h18"/><path d="M10 16h4"/><path d="M12 14v4"/></svg>
+          Life Events Discovered
+        </h2>
+        <button id="close-pending-btn" class="close-modal-btn" aria-label="Close dialog">
+          <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+        </button>
+      </div>
+      <div class="modal-body">
+        <p class="modal-subtitle">We found potential life events in your memory. Please review them before they are added to your timeline.</p>
+        <div id="pending-events-list" class="pending-events-list">
+          <!-- Pending event cards will be injected here -->
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button id="approve-all-pending-btn" class="btn btn-primary" style="width:100%;">Approve All</button>
+      </div>
+    </div>
+  </div>
 
   <script type="module" src="/src/main.js"></script>
 </body>
