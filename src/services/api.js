@@ -2,11 +2,15 @@
  * src/services/api.js
  *
  * Base helper for calling Supabase Edge Functions with Firebase auth.
- * Automatically attaches the current user's Firebase ID token as Bearer.
+ * Supabase requires BOTH:
+ *   - apikey: <supabase-anon-key>   (Supabase gateway auth)
+ *   - Authorization: Bearer <firebase-jwt>  (our custom Firebase verification)
  */
 
 import { edgeFnUrl } from './supabase.js';
 import { currentUser } from '../auth.js';
+
+const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
 
 /**
  * Call a Supabase Edge Function.
@@ -29,17 +33,34 @@ export async function callEdgeFn(fnName, { method = 'GET', body, params } = {}) 
   const res = await fetch(url, {
     method,
     headers: {
-      Authorization: `Bearer ${token}`,
+      // Supabase gateway requires its own anon key
+      'apikey': SUPABASE_ANON_KEY,
+      // Our Edge Function reads this to verify the Firebase user
+      'Authorization': `Bearer ${token}`,
       'Content-Type': 'application/json',
     },
     body: body ? JSON.stringify(body) : undefined,
   });
 
-  const data = await res.json();
-
-  if (!res.ok) {
-    throw new Error(data?.error || `Edge Function error ${res.status}`);
+  let data = null;
+  try {
+    data = await res.json();
+  } catch {
+    data = null;
   }
 
-  return data;
+  if (!res.ok) {
+    const message =
+      (typeof data?.error === 'string' && data.error.trim())
+        ? data.error
+        : (typeof data?.error?.message === 'string' && data.error.message.trim())
+          ? data.error.message
+          : (typeof data?.message === 'string' && data.message.trim())
+            ? data.message
+            : `Edge Function error ${res.status}`;
+
+    throw new Error(message);
+  }
+
+  return data ?? {};
 }

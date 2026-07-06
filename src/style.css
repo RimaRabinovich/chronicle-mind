@@ -1048,6 +1048,7 @@ input:focus, textarea:focus {
 }
 
 .wave-bar {
+  display: block;
   flex: 1;
   background: var(--border);
   border-radius: 99px;
@@ -1056,6 +1057,11 @@ input:focus, textarea:focus {
 .wave-bar.active {
   background: var(--purple);
 }
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
 
 .player-scrubber {
   position: absolute; left: 0; right: 0;

@@ -15,6 +15,10 @@ import { getServiceClient } from '../_shared/supabase-client.ts';
 
 const PROJECT_ID = Deno.env.get('FIREBASE_PROJECT_ID')!;
 
+function isMissingTableError(message: string): boolean {
+  return /relation\s+["']?[^"']+["']?\s+does not exist/i.test(message);
+}
+
 Deno.serve(async (req: Request) => {
   if (req.method === 'OPTIONS') return handleOptions();
 
@@ -39,9 +43,17 @@ Deno.serve(async (req: Request) => {
 
       if (type) query = query.eq('type', type);
 
-      const { data, error } = await query;
-      if (error) throw error;
-      return corsResponse(data);
+      try {
+        const { data, error } = await query;
+        if (error) throw error;
+        return corsResponse(data ?? []);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        if (isMissingTableError(message)) {
+          return corsResponse([], 200);
+        }
+        throw err;
+      }
     }
 
     // ── POST: create memory ─────────────────────────────
@@ -103,7 +115,18 @@ Deno.serve(async (req: Request) => {
 
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    const status  = message.includes('expired') || message.includes('signature') ? 401 : 500;
+    const status = message.includes('expired') || message.includes('signature') ? 401 : 500;
+
+    if (isMissingTableError(message) && req.method === 'GET') {
+      return corsResponse([], 200);
+    }
+
+    if (isMissingTableError(message)) {
+      return corsResponse({
+        error: 'The memories table has not been created yet. Please run the Supabase migration first.',
+      }, 503);
+    }
+
     return corsResponse({ error: message }, status);
   }
 });

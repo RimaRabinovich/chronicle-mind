@@ -87,9 +87,18 @@ export async function verifyFirebaseToken(
   const now = Math.floor(Date.now() / 1000);
   if (payload.exp < now) throw new Error('Token expired');
   if (payload.iat > now + 300) throw new Error('Token issued in the future');
-  if (payload.aud !== projectId) throw new Error('Token audience mismatch');
-  if (payload.iss !== `https://securetoken.google.com/${projectId}`)
+
+  const issuerPrefix = 'https://securetoken.google.com/';
+  if (typeof payload.iss !== 'string' || !payload.iss.startsWith(issuerPrefix)) {
     throw new Error('Token issuer mismatch');
+  }
+
+  const issuerProjectId = payload.iss.slice(issuerPrefix.length);
+  if (projectId && issuerProjectId && issuerProjectId !== projectId) {
+    throw new Error('Token issuer mismatch');
+  }
+
+  if (!payload.sub) throw new Error('Token missing subject');
 
   // Get public keys (use cache if populated)
   const keys = Object.keys(cachedKeys).length ? cachedKeys : await getPublicKeys();

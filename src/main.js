@@ -16,7 +16,7 @@ import './style.css';
 import { saveMemory, getAllMemories, deleteMemory, updateMemory } from './services/memories.js';
 import { saveEvent, updateEvent, deleteEvent, getAllEvents, deleteEventsByMemoryId } from './services/events.js';
 import { triggerEmbedding } from './services/rag.js';
-import { hasLegacyData, migrateLegacyData } from './services/migration.js';
+import { uploadFile } from './services/storage.js';
 
 // ── Other utilities ───────────────────────────────────────────────────
 import { transcribeAudio }           from './transcription.js';
@@ -46,17 +46,23 @@ let   appInitialized  = false;   // prevents duplicate init() on auth re-fires
 // ── Boot ───────────────────────────────────────────────
 /** Called once after a user is confirmed signed-in */
 async function init() {
-  await loadMemories();
-  renderTimeline();
-  setupViewTabs();
-  setupTabs();
-  setupRecorder();
-  setupSubmit();
-  setupEntryInteractions();
-  setupEventsInteractions();
-  setupPendingEvents();
-  // Check for legacy IndexedDB data and offer migration
-  checkLegacyMigration();
+  try {
+    await loadMemories();
+    renderTimeline();
+    setupViewTabs();
+    setupTabs();
+    setupRecorder();
+    setupSubmit();
+    setupEntryInteractions();
+    setupEventsInteractions();
+    setupPendingEvents();
+  } catch (err) {
+    console.error('App initialization failed', err);
+    showToast(
+      err?.message || 'Could not load your memories right now. Please try signing out and back in.',
+      'error'
+    );
+  }
 }
 
 /** Boot the auth layer then gate on sign-in */
@@ -170,37 +176,7 @@ async function loadMemories() {
   updateCountBadge();
 }
 
-/**
- * Check for legacy IndexedDB data and offer one-time migration.
- * Called silently after init — shows a toast if data found.
- */
-async function checkLegacyMigration() {
-  try {
-    const { currentUser: fbUser } = await import('./auth.js');
-    const user = fbUser();
-    if (!user) return;
-    const legacy = await hasLegacyData(user.uid);
-    if (!legacy) return;
-    showToast(
-      'Found existing memories from before. Click here to migrate them to the cloud.',
-      'info',
-      { onClick: () => runMigration(user.uid), label: 'Migrate' }
-    );
-  } catch { /* silent */ }
-}
-
-async function runMigration(uid) {
-  showToast('Migrating your memories to the cloud…', 'info');
-  try {
-    const result = await migrateLegacyData(uid, msg => console.log('[migration]', msg));
-    showToast(`✅ Migrated ${result.memories} memories + ${result.events} life events!`, 'success');
-    await loadMemories();
-    renderTimeline();
-  } catch (err) {
-    showToast(`Migration failed: ${err.message}`, 'error');
-  }
-}
-
+// Legacy migration helper removed (no longer offered)
 
 
 /** Returns the Groq API key from .env only */
@@ -395,13 +371,12 @@ async function handleSubmit() {
   const btn   = $('submit-btn');
   const label = $('submit-label');
   btn.disabled  = true;
-  label.textContent = 'Embedding…';
+  label.textContent = 'Saving…';
 
   try {
     const timestamp = new Date().toISOString();
 
-    // 1. Save to Supabase (immediate)
-    label.textContent = 'Saving…';
+    // 1. Save record to Supabase metadata immediately (so transcript is saved right away)
     const saved = await saveMemory({
       content:      content,
       type:         currentMode === 'audio' ? 'audio' : 'text',
@@ -414,15 +389,63 @@ async function handleSubmit() {
     // 2. Trigger server-side embedding (fire-and-forget)
     triggerEmbedding(id, content);
 
-    // 3. Add to local entries list for immediate timeline render
-    entries.unshift({ ...saved, timestamp: saved.created_at, embedding: [] });
+    // 3. Create a local Object URL for immediate in-browser playback
+    let localAudioURL = null;
+    if (currentMode === 'audio' && audioBlob) {
+      localAudioURL = URL.createObjectURL(audioBlob);
+    }
+
+    // 4. Map DB row to entry structure and add to local list for instant render
+    const entry = {
+      id:           saved.id,
+      timestamp:    saved.created_at || timestamp,
+      type:         saved.type,
+      content:      saved.content,
+      summary:      saved.summary ?? null,
+      audioData:    localAudioURL || saved.file_url || null,
+      audioMimeType:saved.file_type || (audioBlob ? audioBlob.type : null),
+      duration:     saved.duration_sec ?? (currentMode === 'audio' ? recSeconds : null),
+      metadata:     saved.metadata ?? {},
+      embedding:    [],
+    };
+
+    entries.unshift(entry);
     updateCountBadge();
 
-    // 4. Render
+    // 5. Render immediately
     renderTimeline();
     setTimeout(() => highlightEntry(id), 120);
 
-    // 5. Reset input
+    // 6. Start background audio upload to Supabase Storage (non-blocking)
+    if (currentMode === 'audio' && audioBlob) {
+      const recordedBlob = audioBlob; // capture reference
+      const fileName = `${id}.webm`;
+      (async () => {
+        try {
+          const { publicUrl, path } = await uploadFile(recordedBlob, 'audio', fileName);
+          // Update DB row with public storage URL
+          await updateMemory({
+            id: id,
+            file_url: publicUrl,
+            file_type: recordedBlob.type,
+            metadata: { storage_path: path }
+          });
+          
+          // Update the in-memory entry to use the persistent URL now
+          const entryInList = entries.find(e => e.id === id);
+          if (entryInList) {
+            entryInList.audioData = publicUrl;
+            // No need to rebuild entirely if user is currently playing, but updating ensures next render is persistent
+          }
+          console.log('Background upload completed successfully:', publicUrl);
+        } catch (err) {
+          console.error('Asynchronous audio upload failed:', err);
+          showToast('Failed to upload audio to cloud, but transcript is saved.', 'error');
+        }
+      })();
+    }
+
+    // 7. Reset inputs
     if (currentMode === 'text') {
       $('thought-input').value = '';
       $('char-count').textContent = '0 characters';
@@ -435,7 +458,7 @@ async function handleSubmit() {
 
     showToast('Memory saved!', 'success');
 
-    // 6. Extract life events in the background (non-blocking)
+    // 8. Extract life events in the background (non-blocking)
     extractAndSaveEvents(id, content);
 
   } catch (err) {
@@ -446,6 +469,7 @@ async function handleSubmit() {
     refreshSubmitBtn();
   }
 }
+
 
 function blobToDataURL(blob) {
   return new Promise((resolve, reject) => {
@@ -562,27 +586,39 @@ function buildEntryCard(entry, displayIndex) {
     : '<span class="entry-type-badge entry-type-text" style="display:inline-flex;align-items:center;gap:4px;"><svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-file-text"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/></svg>TEXT</span>';
 
   let audioHTML = '';
-  if (entry.audioData) {
-    const durationText = entry.duration ? fmtSecs(entry.duration) : '--:--';
-    audioHTML = `
-      <audio id="aud-${entry.id}" src="${entry.audioData}" preload="auto"></audio>
-      <div class="audio-player" id="player-${entry.id}">
-        <button class="audio-play-btn" data-audio-id="${entry.id}" aria-label="Play recording"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-play"><polygon points="6 3 20 12 6 21 6 3"/></svg></button>
-        <div class="player-timeline">
-          <div class="player-scrubber-wrap">
-            ${generateWaveformHTML(entry.id, entry.timestamp ? new Date(entry.timestamp).getTime() : Date.now())}
-            <input class="player-scrubber" id="scrub-${entry.id}"
-              type="range" min="0" max="${entry.duration || 100}" step="0.01" value="0"
-              aria-label="Seek through recording" />
+  if (entry.type === 'audio') {
+    if (entry.audioData) {
+      const durationText = entry.duration ? fmtSecs(entry.duration) : '--:--';
+      audioHTML = `
+        <audio id="aud-${entry.id}" src="${entry.audioData}" preload="auto"></audio>
+        <div class="audio-player" id="player-${entry.id}">
+          <button class="audio-play-btn" data-audio-id="${entry.id}" aria-label="Play recording"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-play"><polygon points="6 3 20 12 6 21 6 3"/></svg></button>
+          <div class="player-timeline">
+            <div class="player-scrubber-wrap">
+              ${generateWaveformHTML(entry.id, entry.timestamp ? new Date(entry.timestamp).getTime() : Date.now())}
+              <input class="player-scrubber" id="scrub-${entry.id}"
+                type="range" min="0" max="${entry.duration || 100}" step="0.01" value="0"
+                aria-label="Seek through recording" />
+            </div>
+          </div>
+          <div class="player-controls-right" style="display: flex; align-items: center; gap: 8px; flex-shrink: 0;">
+            <span class="player-time" id="time-display-${entry.id}">0:00 / ${durationText}</span>
+            <button class="player-speed-btn" data-speed-id="${entry.id}" aria-label="Playback speed">1×</button>
           </div>
         </div>
-        <div class="player-controls-right" style="display: flex; align-items: center; gap: 8px; flex-shrink: 0;">
-          <span class="player-time" id="time-display-${entry.id}">0:00 / ${durationText}</span>
-          <button class="player-speed-btn" data-speed-id="${entry.id}" aria-label="Playback speed">1×</button>
+      `;
+    } else {
+      audioHTML = `
+        <div class="audio-player audio-preparing" id="player-${entry.id}">
+          <div class="audio-preparing-placeholder" style="font-family: monospace; font-size: 11px; color: var(--text-3); padding: var(--s2) 0; text-transform: uppercase; letter-spacing: 0.05em; display: flex; align-items: center; gap: 6px; width: 100%;">
+            <span class="preparing-spinner" style="display: inline-block; width: 10px; height: 10px; border: 1.5px solid var(--text-3); border-top-color: transparent; border-radius: 50%; animation: spin 1s linear infinite; flex-shrink: 0;"></span>
+            Preparing audio...
+          </div>
         </div>
-      </div>
-    `;
+      `;
+    }
   }
+
 
   const hasSummary = !!entry.summary;
   const summaryHTML = hasSummary
