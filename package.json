@@ -9,6 +9,7 @@
   },
   "dependencies": {
     "@huggingface/transformers": "^4.2.0",
+    "@supabase/supabase-js": "^2.110.0",
     "firebase": "^12.15.0",
     "idb": "^8.0.0"
   },

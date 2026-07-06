@@ -2,30 +2,34 @@
  * main.js — Chronicle Mind App Orchestrator
  *
  * Responsibilities:
- *  - Boot: init DB, load entries, start embedder worker, render timeline
+ *  - Boot: auth gate → load memories from Supabase → render timeline
  *  - Capture: text textarea + audio recorder → Groq Whisper transcription
- *  - Embed: send content to worker, await Float32 embedding
- *  - Save: persist entry to IndexedDB
- *  - Related: cosine similarity search → render related-memories panel
+ *  - Embed: server-side via Supabase Edge Function (fire-and-forget)
+ *  - Save: persist memory to Supabase cloud DB
+ *  - Related: cosine similarity via pgvector in Supabase
  *  - Timeline: chronological render, day-grouped, expandable cards
  */
 
 import './style.css';
-import { saveEntry, getAllEntries, deleteEntry, saveEvent, updateEvent, deleteEvent, getAllEvents, deleteEventsByMemoryId, setCurrentUser } from './db.js';
-import { findSimilar }               from './embeddings.js';
+
+// ── Cloud service layer (replaces local IndexedDB db.js) ──────────────
+import { saveMemory, getAllMemories, deleteMemory, updateMemory } from './services/memories.js';
+import { saveEvent, updateEvent, deleteEvent, getAllEvents, deleteEventsByMemoryId } from './services/events.js';
+import { triggerEmbedding } from './services/rag.js';
+import { hasLegacyData, migrateLegacyData } from './services/migration.js';
+
+// ── Other utilities ───────────────────────────────────────────────────
 import { transcribeAudio }           from './transcription.js';
 import { AudioRecorder }             from './recorder.js';
 import { summarizeContent, extractEvents } from './ai.js';
 import { initAuth, signInWithGoogle, signOutUser, onAuthChange } from './auth.js';
 
+
 // ── DOM helpers ────────────────────────────────────────
 const $ = (id) => document.getElementById(id);
 
 // ── App State ──────────────────────────────────────────
-let entries       = [];          // all stored entries (chronological)
-let embedderReady = false;       // true once model finished loading
-let embedderWorker= null;        // Web Worker reference
-let pendingEmbed  = new Map();   // id → { resolve, reject }
+let entries       = [];          // all stored memories (chronological, newest first)
 let currentMode   = 'text';      // 'text' | 'audio'
 let currentTranscript = '';      // transcript from last recording
 let audioBlob     = null;        // raw Blob from MediaRecorder
@@ -36,12 +40,13 @@ const audioURLs   = new Map();   // entry.id → ObjectURL (lazy)
 const eventsCache = new Map();   // event.id → event object (for edit handler)
 let   eventsCount = 0;           // kept in sync by renderEventsTimeline
 
-let   pendingEvents = [];        // holds extracted events before user approval
+let   pendingEvents   = [];      // holds extracted events before user approval
+let   appInitialized  = false;   // prevents duplicate init() on auth re-fires
 
 // ── Boot ───────────────────────────────────────────────
 /** Called once after a user is confirmed signed-in */
 async function init() {
-  await loadEntries();
+  await loadMemories();
   renderTimeline();
   setupViewTabs();
   setupTabs();
@@ -50,7 +55,8 @@ async function init() {
   setupEntryInteractions();
   setupEventsInteractions();
   setupPendingEvents();
-  startEmbedderWorker();
+  // Check for legacy IndexedDB data and offer migration
+  checkLegacyMigration();
 }
 
 /** Boot the auth layer then gate on sign-in */
@@ -83,19 +89,20 @@ function bootAuth() {
     pendingEvents = [];
     eventsCache.clear();
     audioURLs.clear();
-    if (embedderWorker) { embedderWorker.terminate(); embedderWorker = null; }
-    embedderReady = false;
   });
 
   // Auth state subscriber — single source of truth
   onAuthChange(async (user) => {
     if (user) {
       // User is signed in
-      setCurrentUser(user.uid);
       showApp(user);
-      await init();
+      if (!appInitialized) {
+        appInitialized = true;
+        await init();
+      }
     } else {
-      // User signed out
+      // User signed out — reset flag so re-login re-initialises cleanly
+      appInitialized = false;
       showLogin();
     }
   });
@@ -143,74 +150,57 @@ function googleBtnHTML() {
   Continue with Google`;
 }
 
-// ── DB ─────────────────────────────────────────────────
-async function loadEntries() {
-  entries = await getAllEntries();
+// ── Data ───────────────────────────────────────────────
+async function loadMemories() {
+  // Memories come newest-first from the API; reverse for timeline render
+  const cloud = await getAllMemories({ limit: 500 });
+  // Map cloud schema to legacy shape for timeline rendering compatibility
+  entries = cloud.map(m => ({
+    id:           m.id,
+    timestamp:    m.created_at,
+    type:         m.type,
+    content:      m.content,
+    summary:      m.summary ?? null,
+    audioData:    m.file_url ?? null,    // audio played via URL, not DataURL
+    audioMimeType:m.file_type ?? null,
+    duration:     m.duration_sec ?? null,
+    metadata:     m.metadata ?? {},
+    embedding:    [],                    // embeddings live in Supabase, not in-memory
+  })).reverse();                         // oldest → newest for timeline
   updateCountBadge();
 }
 
-// ── Embedder Worker ────────────────────────────────────
-function startEmbedderWorker() {
-  embedderWorker = new Worker(
-    new URL('./embedder.worker.js', import.meta.url),
-    { type: 'module' }
-  );
-
-  embedderWorker.onmessage = ({ data }) => {
-    const { type, data: info, embedding, id, message } = data;
-
-    if (type === 'progress') onModelProgress(info);
-    if (type === 'loaded')   onModelLoaded();
-
-    if (type === 'embedding') {
-      const p = pendingEmbed.get(id);
-      if (p) { p.resolve(embedding); pendingEmbed.delete(id); }
-    }
-    if (type === 'error') {
-      const p = pendingEmbed.get(id);
-      if (p) { p.reject(new Error(message || 'Embedding failed')); pendingEmbed.delete(id); }
-    }
-  };
-
-  embedderWorker.postMessage({ type: 'load' });
+/**
+ * Check for legacy IndexedDB data and offer one-time migration.
+ * Called silently after init — shows a toast if data found.
+ */
+async function checkLegacyMigration() {
+  try {
+    const { currentUser: fbUser } = await import('./auth.js');
+    const user = fbUser();
+    if (!user) return;
+    const legacy = await hasLegacyData(user.uid);
+    if (!legacy) return;
+    showToast(
+      'Found existing memories from before. Click here to migrate them to the cloud.',
+      'info',
+      { onClick: () => runMigration(user.uid), label: 'Migrate' }
+    );
+  } catch { /* silent */ }
 }
 
-function onModelProgress(info) {
-  const fill   = $('model-progress');
-  const label  = $('model-status-label');
-  if (!fill || !label) return;
-
-  if (info?.status === 'downloading') {
-    const pct = Math.min(Math.round(info.progress ?? 0), 99);
-    fill.style.width = `${pct}%`;
-    label.textContent = `Downloading AI model… ${pct}%`;
-  } else if (info?.status === 'loading') {
-    fill.style.width = '92%';
-    label.textContent = 'Loading model into memory…';
-  } else if (info?.status === 'ready') {
-    fill.style.width = '100%';
+async function runMigration(uid) {
+  showToast('Migrating your memories to the cloud…', 'info');
+  try {
+    const result = await migrateLegacyData(uid, msg => console.log('[migration]', msg));
+    showToast(`✅ Migrated ${result.memories} memories + ${result.events} life events!`, 'success');
+    await loadMemories();
+    renderTimeline();
+  } catch (err) {
+    showToast(`Migration failed: ${err.message}`, 'error');
   }
 }
 
-function onModelLoaded() {
-  embedderReady = true;
-
-  // Fade out overlay
-  const overlay = $('model-overlay');
-  overlay.classList.add('hidden');
-
-  // Update status badge (badge removed from DOM)
-
-  refreshSubmitBtn();
-  showToast('AI model loaded — ready to capture memories!', 'success');
-}
-
-function getEmbedding(text, id) {
-  return new Promise((resolve, reject) => {
-    pendingEmbed.set(id, { resolve, reject });
-    embedderWorker.postMessage({ type: 'embed', text, id });
-  });
-}
 
 
 /** Returns the Groq API key from .env only */
@@ -391,7 +381,7 @@ function setupSubmit() {
 function refreshSubmitBtn() {
   const hasText  = currentMode === 'text'  && $('thought-input').value.trim().length > 0;
   const hasAudio = currentMode === 'audio' && currentTranscript.trim().length > 0;
-  $('submit-btn').disabled = !embedderReady || (!hasText && !hasAudio);
+  $('submit-btn').disabled = !hasText && !hasAudio;
 }
 
 async function handleSubmit() {
@@ -408,39 +398,31 @@ async function handleSubmit() {
   label.textContent = 'Embedding…';
 
   try {
-    const id        = crypto.randomUUID();
     const timestamp = new Date().toISOString();
 
-    // 1. Get embedding
-    const embedding = await getEmbedding(content, id);
+    // 1. Save to Supabase (immediate)
+    label.textContent = 'Saving…';
+    const saved = await saveMemory({
+      content:      content,
+      type:         currentMode === 'audio' ? 'audio' : 'text',
+      source:       'manual',
+      duration_sec: currentMode === 'audio' ? recSeconds : null,
+      metadata:     {},
+    });
+    const id = saved.id;
 
-    // 2. Store audio as DataURL (if any)
-    let audioData    = null;
-    let audioMimeType = null;
-    if (audioBlob) {
-      audioData     = await blobToDataURL(audioBlob);
-      audioMimeType = audioBlob.type;
-    }
+    // 2. Trigger server-side embedding (fire-and-forget)
+    triggerEmbedding(id, content);
 
-    // 3. Build & save entry
-    const entry = { id, timestamp, type: currentMode === 'audio' ? 'audio' : 'text',
-                    content, embedding, audioData, audioMimeType,
-                    duration: currentMode === 'audio' ? recSeconds : null };
-    await saveEntry(entry);
-    await loadEntries();
+    // 3. Add to local entries list for immediate timeline render
+    entries.unshift({ ...saved, timestamp: saved.created_at, embedding: [] });
+    updateCountBadge();
 
-    // 4. Find similar (exclude self)
-    label.textContent = 'Finding connections…';
-    const similar = findSimilar(embedding, entries, { excludeId: id, threshold: 0.38, topN: 5 });
-
-    // 5. Render
-    renderRelated(similar);
+    // 4. Render
     renderTimeline();
-
-    // 6. Highlight new entry
     setTimeout(() => highlightEntry(id), 120);
 
-    // 7. Reset input
+    // 5. Reset input
     if (currentMode === 'text') {
       $('thought-input').value = '';
       $('char-count').textContent = '0 characters';
@@ -451,11 +433,9 @@ async function handleSubmit() {
       $('transcript-text').textContent = '';
     }
 
-    showToast(similar.length > 0
-      ? `Memory saved! Found ${similar.length} related ${similar.length === 1 ? 'memory' : 'memories'}.`
-      : 'Memory saved!', 'success');
+    showToast('Memory saved!', 'success');
 
-    // 8. Extract life events in the background (non-blocking)
+    // 6. Extract life events in the background (non-blocking)
     extractAndSaveEvents(id, content);
 
   } catch (err) {
@@ -805,9 +785,10 @@ async function handleDeleteEntry(id) {
     await new Promise(r => setTimeout(r, 200));
   }
 
-  await deleteEntry(id);
+  await deleteMemory(id);
   await deleteEventsByMemoryId(id);   // clean up extracted events too
-  await loadEntries();
+  entries = entries.filter(e => e.id !== id);
+  updateCountBadge();
   renderTimeline();
 
   const relatedIds = [...document.querySelectorAll('.related-item')].map(el => el.dataset.entryId);
@@ -836,9 +817,9 @@ async function handleSummarize(btn) {
   try {
     const summary = await summarizeContent(entry.content, getGroqKey());
 
-    // Cache in DB
+    // Persist summary update to Supabase
     entry.summary = summary;
-    await saveEntry(entry);
+    await updateMemory({ id: entry.id, summary });
 
     // Update UI
     sumBox.textContent = summary;
