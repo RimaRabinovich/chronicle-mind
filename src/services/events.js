@@ -22,6 +22,11 @@ export async function deleteEvent(id) {
   return callEdgeFn('events', { method: 'DELETE', params: { id } });
 }
 
+export async function deleteAllUserEvents() {
+  return callEdgeFn('events', { method: 'DELETE', params: { all: 'true' } });
+}
+
+
 export async function deleteEventsByMemoryId(memoryId) {
   // Fetch all events for this memory, then delete each.
   // The Edge Function doesn't have a bulk-delete-by-memory route yet,

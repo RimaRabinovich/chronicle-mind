@@ -99,17 +99,19 @@ Deno.serve(async (req: Request) => {
     // ── DELETE: remove memory ───────────────────────────
     if (req.method === 'DELETE') {
       const id = url.searchParams.get('id');
-      if (!id) return corsResponse({ error: 'id query param is required' }, 400);
+      const all = url.searchParams.get('all') === 'true';
+      if (!id && !all) return corsResponse({ error: 'id or all=true query param is required' }, 400);
 
-      const { error } = await db
-        .from('memories')
-        .delete()
-        .eq('id', id)
-        .eq('user_id', uid);
+      let query = db.from('memories').delete().eq('user_id', uid);
+      if (id) {
+        query = query.eq('id', id);
+      }
 
+      const { error } = await query;
       if (error) throw error;
       return corsResponse({ ok: true });
     }
+
 
     return corsResponse({ error: 'Method not allowed' }, 405);
 

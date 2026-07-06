@@ -13,16 +13,18 @@
 import './style.css';
 
 // ── Cloud service layer (replaces local IndexedDB db.js) ──────────────
-import { saveMemory, getAllMemories, deleteMemory, updateMemory } from './services/memories.js';
-import { saveEvent, updateEvent, deleteEvent, getAllEvents, deleteEventsByMemoryId } from './services/events.js';
+import { saveMemory, getAllMemories, deleteMemory, updateMemory, deleteAllUserMemories } from './services/memories.js';
+import { saveEvent, updateEvent, deleteEvent, getAllEvents, deleteEventsByMemoryId, deleteAllUserEvents } from './services/events.js';
 import { triggerEmbedding } from './services/rag.js';
-import { uploadFile } from './services/storage.js';
+import { uploadFile, deleteUserFolder } from './services/storage.js';
+
 
 // ── Other utilities ───────────────────────────────────────────────────
 import { transcribeAudio }           from './transcription.js';
 import { AudioRecorder }             from './recorder.js';
+
 import { summarizeContent, extractEvents } from './ai.js';
-import { initAuth, signInWithGoogle, signOutUser, onAuthChange } from './auth.js';
+import { initAuth, signInWithGoogle, signOutUser, onAuthChange, reauthenticateUser } from './auth.js';
 
 
 // ── DOM helpers ────────────────────────────────────────
@@ -96,7 +98,19 @@ function bootAuth() {
     }
   });
 
-  // Sign-out button in the header
+  // Dropdown toggle
+  $('user-profile-trigger').addEventListener('click', (e) => {
+    e.stopPropagation();
+    $('user-dropdown').classList.toggle('hidden');
+  });
+
+  // Close dropdown on click outside
+  document.addEventListener('click', () => {
+    const dropdown = $('user-dropdown');
+    if (dropdown) dropdown.classList.add('hidden');
+  });
+
+  // Sign-out button inside the dropdown
   $('signout-btn').addEventListener('click', async () => {
     await signOutUser();
     // Reset in-memory state so re-login starts fresh
@@ -106,6 +120,57 @@ function bootAuth() {
     eventsCache.clear();
     audioURLs.clear();
   });
+
+  // Delete account button inside the dropdown
+  $('delete-account-btn').addEventListener('click', async (e) => {
+    e.stopPropagation();
+    $('user-dropdown').classList.add('hidden');
+
+    const { currentUser: getFbUser } = await import('./auth.js');
+    const user = getFbUser();
+    if (!user) {
+      showToast('No active user session found.', 'error');
+      return;
+    }
+    const uid = user.uid;
+
+    const confirmed = confirm(
+      "Are you sure you want to permanently delete all your account data?\n\n" +
+      "This will erase all your memories, audio files, and life events forever.\n" +
+      "This action CANNOT be undone."
+    );
+    if (!confirmed) return;
+
+    const doubleConfirmed = prompt("Type 'DELETE' to confirm deletion:");
+    if (doubleConfirmed !== 'DELETE') {
+      showToast('Account deletion cancelled.', 'info');
+      return;
+    }
+
+    try {
+      showToast('Deleting all data and files...', 'info');
+
+      // 1. Delete all memories from Supabase (deletes memory rows and chunks)
+      await deleteAllUserMemories();
+
+      // 2. Delete all life events from Supabase (including manually created events)
+      await deleteAllUserEvents();
+
+      // 3. Delete all audio files from private Supabase Storage
+      await deleteUserFolder(uid);
+
+      // 4. Force Sign out user
+      await signOutUser();
+
+      showToast('Account data deleted successfully.', 'success');
+    } catch (err) {
+      console.error('Account data deletion failed:', err);
+      showToast(`Deletion failed: ${err.message}`, 'error');
+    }
+  });
+
+
+
 
   // Auth state subscriber — single source of truth
   onAuthChange(async (user) => {
@@ -123,6 +188,7 @@ function bootAuth() {
     }
   });
 }
+
 
 function showLoginError(msg) {
   const el = $('login-error');

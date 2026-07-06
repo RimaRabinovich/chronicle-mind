@@ -10,7 +10,9 @@ import {
   signInWithPopup,
   signOut,
   onAuthStateChanged,
+  reauthenticateWithPopup,
 } from 'firebase/auth';
+
 
 const firebaseConfig = {
   apiKey:     import.meta.env.VITE_FIREBASE_API_KEY,
@@ -48,3 +50,10 @@ export async function signOutUser() {
 export function onAuthChange(callback) {
   return onAuthStateChanged(auth, callback);
 }
+
+/** Reauthenticate the user with Google. */
+export async function reauthenticateUser(user) {
+  const provider = new GoogleAuthProvider();
+  await reauthenticateWithPopup(user, provider);
+}
+

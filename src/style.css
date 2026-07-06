@@ -447,7 +447,18 @@ input:focus, textarea:focus {
 
 /* ── User area in header ─────────────────────────────── */
 .header-user {
+  position: relative;
+}
+.user-profile-trigger {
   display: flex; align-items: center; gap: var(--s3);
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: var(--r-sm);
+  transition: background var(--dur) var(--ease);
+  user-select: none;
+}
+.user-profile-trigger:hover {
+  background: var(--surface-hover);
 }
 .user-avatar {
   width: 32px; height: 32px; border-radius: 50%;
@@ -455,23 +466,59 @@ input:focus, textarea:focus {
   color: #fff; font-size: 13px; font-weight: 700;
   display: flex; align-items: center; justify-content: center;
   flex-shrink: 0;
+  border: 1px solid var(--border);
 }
 .user-name {
-  font-size: 13px; font-weight: 500; color: var(--text-2);
+  font-size: 13.5px; font-weight: 600; color: var(--text);
   max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.signout-btn {
-  display: inline-flex; align-items: center; gap: var(--s2);
-  padding: var(--s1) var(--s3);
-  border: 1px solid var(--border); border-radius: var(--r-sm);
-  background: none; color: var(--text-2);
-  font-size: 12px; font-weight: 500; cursor: pointer;
+.user-dropdown {
+  position: absolute; right: 0; top: calc(100% + var(--s2));
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  box-shadow: var(--shadow-lg);
+  padding: var(--s2);
+  min-width: 160px;
+  display: flex; flex-direction: column; gap: 2px;
+  z-index: 500;
+  animation: slide-down-fade 0.18s var(--ease);
+}
+.user-dropdown.hidden {
+  display: none !important;
+}
+.dropdown-item {
+  width: 100%;
+  display: flex; align-items: center; gap: var(--s2);
+  padding: var(--s2) var(--s3);
+  background: none; border: none;
+  font-family: inherit; font-size: 13px; font-weight: 500; color: var(--text-2);
+  cursor: pointer; text-align: left;
+  border-radius: var(--r-sm);
   transition: all var(--dur) var(--ease);
 }
-.signout-btn:hover {
-  background: var(--red-dim); border-color: var(--red);
+.dropdown-item:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+.dropdown-item.danger {
   color: var(--red);
 }
+.dropdown-item.danger:hover {
+  background: var(--red-dim);
+  color: var(--red);
+}
+.dropdown-divider {
+  height: 1px;
+  background: var(--border);
+  margin: var(--s1) 0;
+}
+
+@keyframes slide-down-fade {
+  from { transform: translateY(-4px); opacity: 0; }
+  to { transform: none; opacity: 1; }
+}
+
 
 /* ── Login Screen ────────────────────────────────────── */
 .login-screen {

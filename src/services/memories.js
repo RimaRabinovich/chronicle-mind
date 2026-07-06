@@ -51,6 +51,14 @@ export async function deleteMemory(id) {
 }
 
 /**
+ * Delete all memories for the current authenticated user.
+ */
+export async function deleteAllUserMemories() {
+  return callEdgeFn('memories', { method: 'DELETE', params: { all: 'true' } });
+}
+
+
+/**
  * Trigger server-side embedding for a memory.
  * Chunks the content and stores vectors in memory_chunks.
  * Fire-and-forget: call without await if you don't need to wait.

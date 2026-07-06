@@ -52,16 +52,26 @@
         <span class="brand-name">Chronicle Mind</span>
         <span class="brand-tagline" aria-hidden="true">Your thoughts, remembered</span>
       </div>
-      <!-- User info + sign-out -->
-      <div class="header-user" aria-label="User account">
-        <div class="user-avatar" id="user-avatar" aria-hidden="true"></div>
-        <span id="user-name" class="user-name"></span>
-        <button id="signout-btn" class="signout-btn" aria-label="Sign out">
-          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" x2="9" y1="12" y2="12"/></svg>
-          Sign out
-        </button>
+      <!-- User info + dropdown menu -->
+      <div class="header-user" aria-label="User account" id="header-user">
+        <div class="user-profile-trigger" id="user-profile-trigger" role="button" tabindex="0" aria-haspopup="true" aria-expanded="false">
+          <div class="user-avatar" id="user-avatar" aria-hidden="true"></div>
+          <span id="user-name" class="user-name"></span>
+        </div>
+        <div class="user-dropdown hidden" id="user-dropdown" role="menu">
+          <button id="signout-btn" class="dropdown-item" role="menuitem">
+            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-log-out"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" x2="9" y1="12" y2="12"/></svg>
+            Sign out
+          </button>
+          <div class="dropdown-divider"></div>
+          <button id="delete-account-btn" class="dropdown-item danger" role="menuitem">
+            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-trash-2"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><line x1="10" x2="10" y1="11" y2="17"/><line x1="14" x2="14" y1="11" y2="17"/></svg>
+            Delete Account
+          </button>
+        </div>
       </div>
     </header>
+
 
     <!-- Main Layout -->
     <main class="app-main">

@@ -76,3 +76,32 @@ export async function deleteFile(path) {
   const { error } = await client.storage.from(BUCKET).remove([path]);
   if (error) throw new Error(`Storage delete failed: ${error.message}`);
 }
+
+/**
+ * Permanently delete all files stored under a user's UID folder.
+ * @param {string} uid
+ */
+export async function deleteUserFolder(uid) {
+  const client = getSupabaseClient();
+  // List all files in the bucket under the user's uid folder
+  const { data: files, error: listError } = await client.storage
+    .from(BUCKET)
+    .list(`${uid}/audio`);
+
+  if (listError) {
+    console.warn('Failed to list files for folder deletion:', listError);
+    return;
+  }
+
+  if (files && files.length > 0) {
+    const pathsToDelete = files.map(f => `${uid}/audio/${f.name}`);
+    const { error: removeError } = await client.storage
+      .from(BUCKET)
+      .remove(pathsToDelete);
+
+    if (removeError) {
+      console.warn('Failed to delete files during folder deletion:', removeError);
+    }
+  }
+}
+
