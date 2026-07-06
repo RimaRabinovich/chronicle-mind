@@ -47,6 +47,11 @@ let   appInitialized  = false;   // prevents duplicate init() on auth re-fires
 let entryInteractionsRegistered = false;
 let eventInteractionsRegistered = false;
 let pendingEventsRegistered     = false;
+let viewTabsRegistered          = false;
+let tabsRegistered              = false;
+let recorderRegistered          = false;
+let submitRegistered            = false;
+
 
 // ── Boot ───────────────────────────────────────────────
 /** Called once after a user is confirmed signed-in */
@@ -193,7 +198,11 @@ function getGroqKey() {
 
 // ── View Tabs (Memories / Life Events) ─────────────────
 function setupViewTabs() {
+  if (viewTabsRegistered) return;
+  viewTabsRegistered = true;
+
   $('vtab-memories').addEventListener('click', () => switchView('memories'));
+
   $('vtab-events').addEventListener('click',   async () => {
     switchView('events');
     await renderEventsTimeline();
@@ -216,7 +225,11 @@ function switchView(view) {
 // ── Tabs ───────────────────────────────────────────────
 
 function setupTabs() {
+  if (tabsRegistered) return;
+  tabsRegistered = true;
+
   $('tab-text').addEventListener('click',  () => switchTab('text'));
+
   $('tab-audio').addEventListener('click', () => switchTab('audio'));
 
   // Character counter
@@ -249,7 +262,11 @@ function switchTab(mode) {
 
 // ── Recorder ───────────────────────────────────────────
 function setupRecorder() {
+  if (recorderRegistered) return;
+  recorderRegistered = true;
+
   $('record-btn').addEventListener('click', toggleRecording);
+
 
   // Edit transcript
   $('edit-transcript').addEventListener('click', () => {
@@ -359,7 +376,11 @@ function updateTimer() {
 
 // ── Submit ─────────────────────────────────────────────
 function setupSubmit() {
+  if (submitRegistered) return;
+  submitRegistered = true;
+
   $('submit-btn').addEventListener('click', handleSubmit);
+
 }
 
 function refreshSubmitBtn() {
