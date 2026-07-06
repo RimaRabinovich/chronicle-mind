@@ -2,7 +2,7 @@
 export const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
-  'Access-Control-Allow-Headers': 'Authorization, Content-Type, apikey, x-client-info',
+  'Access-Control-Allow-Headers': 'Authorization, Content-Type, apikey, x-client-info, x-file-path',
 };
 
 export function corsResponse(body: unknown, status = 200) {

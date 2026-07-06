@@ -43,6 +43,11 @@ let   eventsCount = 0;           // kept in sync by renderEventsTimeline
 let   pendingEvents   = [];      // holds extracted events before user approval
 let   appInitialized  = false;   // prevents duplicate init() on auth re-fires
 
+// Prevent duplicate event listener attachments on sign-out/sign-in cycles
+let entryInteractionsRegistered = false;
+let eventInteractionsRegistered = false;
+let pendingEventsRegistered     = false;
+
 // ── Boot ───────────────────────────────────────────────
 /** Called once after a user is confirmed signed-in */
 async function init() {
@@ -266,6 +271,9 @@ function setupRecorder() {
     }
   });
 
+  $('transcript-text').addEventListener('input', refreshSubmitBtn);
+
+
   // Discard recording
   $('discard-recording').addEventListener('click', () => {
     currentTranscript = '';
@@ -356,16 +364,17 @@ function setupSubmit() {
 
 function refreshSubmitBtn() {
   const hasText  = currentMode === 'text'  && $('thought-input').value.trim().length > 0;
-  const hasAudio = currentMode === 'audio' && currentTranscript.trim().length > 0;
+  const hasAudio = currentMode === 'audio' && $('transcript-text').textContent.trim().length > 0;
   $('submit-btn').disabled = !hasText && !hasAudio;
 }
 
 async function handleSubmit() {
   const content = currentMode === 'text'
     ? $('thought-input').value.trim()
-    : currentTranscript.trim();
+    : $('transcript-text').textContent.trim();
 
   if (!content) return;
+
 
   // ── Loading state ──
   const btn   = $('submit-btn');
@@ -422,28 +431,28 @@ async function handleSubmit() {
       const fileName = `${id}.webm`;
       (async () => {
         try {
-          const { publicUrl, path } = await uploadFile(recordedBlob, 'audio', fileName);
-          // Update DB row with public storage URL
+          const { path } = await uploadFile(recordedBlob, 'audio', fileName);
+          // Update DB row with private storage path
           await updateMemory({
             id: id,
-            file_url: publicUrl,
+            file_url: path,
             file_type: recordedBlob.type,
             metadata: { storage_path: path }
           });
           
-          // Update the in-memory entry to use the persistent URL now
+          // Update the in-memory entry to use the private path now
           const entryInList = entries.find(e => e.id === id);
           if (entryInList) {
-            entryInList.audioData = publicUrl;
-            // No need to rebuild entirely if user is currently playing, but updating ensures next render is persistent
+            entryInList.audioData = path;
           }
-          console.log('Background upload completed successfully:', publicUrl);
+          console.log('Background upload completed successfully:', path);
         } catch (err) {
           console.error('Asynchronous audio upload failed:', err);
           showToast('Failed to upload audio to cloud, but transcript is saved.', 'error');
         }
       })();
     }
+
 
     // 7. Reset inputs
     if (currentMode === 'text') {
@@ -588,10 +597,14 @@ function buildEntryCard(entry, displayIndex) {
   let audioHTML = '';
   if (entry.type === 'audio') {
     if (entry.audioData) {
+      const isPrivatePath = !entry.audioData.startsWith('blob:') && !entry.audioData.startsWith('http');
+      const audioSrc = isPrivatePath ? '' : entry.audioData;
+      const storageAttr = isPrivatePath ? `data-storage-path="${entry.audioData}"` : '';
       const durationText = entry.duration ? fmtSecs(entry.duration) : '--:--';
       audioHTML = `
-        <audio id="aud-${entry.id}" src="${entry.audioData}" preload="auto"></audio>
+        <audio id="aud-${entry.id}" src="${audioSrc}" ${storageAttr} preload="auto"></audio>
         <div class="audio-player" id="player-${entry.id}">
+
           <button class="audio-play-btn" data-audio-id="${entry.id}" aria-label="Play recording"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-play"><polygon points="6 3 20 12 6 21 6 3"/></svg></button>
           <div class="player-timeline">
             <div class="player-scrubber-wrap">
@@ -735,7 +748,11 @@ function fmtSecs(s) {
 
 // ── Entry interactions (delegated) ─────────────────────
 function setupEntryInteractions() {
+  if (entryInteractionsRegistered) return;
+  entryInteractionsRegistered = true;
+
   document.addEventListener('click', async (e) => {
+
     // Expand / collapse card (avoid triggering on buttons)
     const card = e.target.closest('.entry-card');
     if (card && !e.target.closest('button')) {
@@ -757,13 +774,58 @@ function setupEntryInteractions() {
       const id  = playBtn.dataset.audioId;
       const aud = document.getElementById(`aud-${id}`);
       if (!aud) return;
+
       if (aud.paused) {
+        // 1. If it's a private storage path and src is empty, fetch a secure signed URL dynamically
+        if (!aud.src || aud.src === window.location.href || aud.src === '') {
+          const path = aud.dataset.storagePath;
+          if (path) {
+            playBtn.disabled = true;
+            playBtn.innerHTML = '<span class="preparing-spinner" style="display: inline-block; width: 10px; height: 10px; border: 1.5px solid var(--text-3); border-top-color: transparent; border-radius: 50%; animation: spin 1s linear infinite; flex-shrink: 0;"></span>';
+            try {
+              const { getSignedUrl } = await import('./services/storage.js');
+              const signedUrl = await getSignedUrl(path);
+              aud.src = signedUrl;
+              aud.load();
+
+              // Wait for metadata to load to ensure playback starts properly
+              await new Promise((resolve) => {
+                const onLoaded = () => {
+                  aud.removeEventListener('loadedmetadata', onLoaded);
+                  aud.removeEventListener('error', onError);
+                  resolve();
+                };
+                const onError = () => {
+                  aud.removeEventListener('loadedmetadata', onLoaded);
+                  aud.removeEventListener('error', onError);
+                  resolve(); // resolve anyway to attempt play
+                };
+                aud.addEventListener('loadedmetadata', onLoaded);
+                aud.addEventListener('error', onError);
+                setTimeout(onLoaded, 1000); // safety timeout
+              });
+            } catch (err) {
+              console.error('Failed to load signed URL:', err);
+              showToast('Failed to load private audio link.', 'error');
+              playBtn.disabled = false;
+              playBtn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-play"><polygon points="6 3 20 12 6 21 6 3"/></svg>';
+              return;
+            } finally {
+              playBtn.disabled = false;
+            }
+          }
+        }
+
         // Pause any other playing audio
         document.querySelectorAll('audio').forEach(a => { if (a !== aud) { a.pause(); } });
         document.querySelectorAll('[data-audio-id]').forEach(b => {
           b.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-play"><polygon points="6 3 20 12 6 21 6 3"/></svg>';
         });
-        aud.play();
+        
+        aud.play().catch(err => {
+          console.warn('Playback interrupted:', err);
+        });
+        
         playBtn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-pause"><rect width="4" height="16" x="14" y="4" rx="1"/><rect width="4" height="16" x="6" y="4" rx="1"/></svg>';
         aud.onended = () => {
           playBtn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-play"><polygon points="6 3 20 12 6 21 6 3"/></svg>';
@@ -773,6 +835,7 @@ function setupEntryInteractions() {
         playBtn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-play"><polygon points="6 3 20 12 6 21 6 3"/></svg>';
       }
     }
+
 
     // Speed toggle (1× → 1.5× → 2× → 1×)
     const speedBtn = e.target.closest('[data-speed-id]');
@@ -821,6 +884,21 @@ async function handleDeleteEntry(id) {
     await new Promise(r => setTimeout(r, 200));
   }
 
+  // Find entry in local list before deleting to remove private audio file if exists
+  const entry = entries.find(e => e.id === id);
+  if (entry && entry.type === 'audio' && entry.audioData) {
+    const isPrivatePath = !entry.audioData.startsWith('blob:') && !entry.audioData.startsWith('http');
+    if (isPrivatePath) {
+      try {
+        const { deleteFile } = await import('./services/storage.js');
+        await deleteFile(entry.audioData);
+        console.log('Audio file deleted from storage bucket:', entry.audioData);
+      } catch (err) {
+        console.warn('Failed to delete audio file from bucket:', err);
+      }
+    }
+  }
+
   await deleteMemory(id);
   await deleteEventsByMemoryId(id);   // clean up extracted events too
   entries = entries.filter(e => e.id !== id);
@@ -832,6 +910,7 @@ async function handleDeleteEntry(id) {
 
   showToast('Memory deleted.', 'info');
 }
+
 
 // ── Summarize ──────────────────────────────────────────
 async function handleSummarize(btn) {
@@ -902,13 +981,16 @@ async function renderEventsTimeline() {
   const container = $('events-container');
   const empty     = $('events-empty');
 
-  const allEvents = await getAllEvents(); // sorted by date asc
+  const allEvents = await getAllEvents();
+  // Sort descending: most recent year/date first
+  const sortedEvents = [...allEvents].sort((a, b) => b.date.localeCompare(a.date));
+
   eventsCache.clear();
-  allEvents.forEach(ev => eventsCache.set(ev.id, ev));
-  eventsCount = allEvents.length;
+  sortedEvents.forEach(ev => eventsCache.set(ev.id, ev));
+  eventsCount = sortedEvents.length;
   updateCountBadge();
 
-  if (allEvents.length === 0) {
+  if (sortedEvents.length === 0) {
     container.classList.add('hidden');
     empty.classList.remove('hidden');
     return;
@@ -918,15 +1000,16 @@ async function renderEventsTimeline() {
   container.classList.remove('hidden');
   container.innerHTML = '';
 
-  // Group by year
+  // Group by year (Maps preserve insertion order, so newest years will render first)
   const byYear = new Map();
-  for (const ev of allEvents) {
+  for (const ev of sortedEvents) {
     const year = ev.date.slice(0, 4);
     if (!byYear.has(year)) byYear.set(year, []);
     byYear.get(year).push(ev);
   }
 
   for (const [year, yearEvents] of byYear) {
+
     const group = document.createElement('div');
     group.className = 'events-year-group';
     group.innerHTML = `<div class="events-year-label">${year}</div>`;
@@ -997,7 +1080,11 @@ function buildEventCard(ev) {
 
 // Delegated events for the events container (edit / save / cancel)
 function setupEventsInteractions() {
+  if (eventInteractionsRegistered) return;
+  eventInteractionsRegistered = true;
+
   $('events-container').addEventListener('click', async (e) => {
+
     // ── Jump to source memory ──
     const srcLink = e.target.closest('[data-source-memory]');
     if (srcLink) {
@@ -1094,7 +1181,11 @@ function setupEventsInteractions() {
 
 // ── Pending Events UI ──────────────────────────────────
 function setupPendingEvents() {
+  if (pendingEventsRegistered) return;
+  pendingEventsRegistered = true;
+
   $('close-pending-btn').addEventListener('click', hidePendingEventsModal);
+
   $('approve-all-pending-btn').addEventListener('click', async () => {
     // Save all pending events
     for (const ev of pendingEvents) {

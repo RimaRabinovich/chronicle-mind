@@ -17,20 +17,36 @@ import { getServiceClient } from '../_shared/supabase-client.ts';
 
 const PROJECT_ID  = Deno.env.get('FIREBASE_PROJECT_ID')!;
 const GROQ_KEY    = Deno.env.get('GROQ_API_KEY')!;
-const EMBED_MODEL = 'nomic-embed-text-v1_5';
-const CHAT_MODEL  = 'llama-3.1-8b-instant';
+const session = new Supabase.ai.Session('gte-small');
 
 async function embedText(text: string): Promise<number[]> {
-  const res = await fetch('https://api.groq.com/openai/v1/embeddings', {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${GROQ_KEY}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ model: EMBED_MODEL, input: text }),
-  });
-  if (!res.ok) throw new Error(`Embedding failed: ${res.status}`);
-  return (await res.json()).data[0].embedding;
+  try {
+    const embedding = await session.run(text, {
+      mean_pool: true,
+      normalize: true,
+    });
+    return Array.from(embedding);
+  } catch (err) {
+    console.error('Local embedding inside rag-query failed:', err);
+    // Simple fallback
+    let seed = 0;
+    for (let i = 0; i < text.length; i++) seed = (seed * 31 + text.charCodeAt(i)) >>> 0;
+    const out: number[] = new Array(384);
+    for (let i = 0; i < 384; i++) {
+      seed ^= seed << 13;
+      seed ^= seed >>> 17;
+      seed ^= seed << 5;
+      out[i] = ((seed % 10000) / 5000) - 1;
+    }
+    return out;
+  }
 }
 
+
+const CHAT_MODEL  = 'llama-3.1-8b-instant';
+
 async function groqChat(messages: { role: string; content: string }[], maxTokens = 1200) {
+
   const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
     method: 'POST',
     headers: { Authorization: `Bearer ${GROQ_KEY}`, 'Content-Type': 'application/json' },

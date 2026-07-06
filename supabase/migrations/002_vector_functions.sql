@@ -5,7 +5,7 @@
 
 -- Retrieve the top-K most similar memory chunks for a user
 CREATE OR REPLACE FUNCTION match_memory_chunks(
-  query_embedding vector(768),
+  query_embedding vector(384),
   match_user_id   text,
   match_count     int DEFAULT 6
 )
@@ -33,7 +33,7 @@ $$;
 
 -- Retrieve the top-K most similar knowledge base chunks
 CREATE OR REPLACE FUNCTION match_knowledge_chunks(
-  query_embedding vector(768),
+  query_embedding vector(384),
   kb_ids          uuid[],
   match_count     int DEFAULT 4
 )
@@ -61,7 +61,7 @@ $$;
 
 -- Retrieve similar memories (top-level, not chunks) for a user
 CREATE OR REPLACE FUNCTION match_memories(
-  query_embedding vector(768),
+  query_embedding vector(384),
   match_user_id   text,
   match_count     int DEFAULT 5,
   similarity_threshold float DEFAULT 0.3

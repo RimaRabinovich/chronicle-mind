@@ -21,7 +21,7 @@ CREATE TABLE IF NOT EXISTS memories (
   file_name     text,
   file_type     text,                                          -- mime type
   duration_sec  int,                                           -- audio/video duration
-  embedding     vector(768),                                   -- semantic embedding (768-dim nomic/MiniLM)
+  embedding     vector(384),                                   -- semantic embedding (384-dim local gte-small)
   metadata      jsonb        NOT NULL DEFAULT '{}',            -- flexible extras
   created_at    timestamptz  NOT NULL DEFAULT now(),
   updated_at    timestamptz  NOT NULL DEFAULT now()
@@ -58,7 +58,7 @@ CREATE TABLE IF NOT EXISTS memory_chunks (
   user_id       text         NOT NULL,
   chunk_index   int          NOT NULL DEFAULT 0,
   content       text         NOT NULL,
-  embedding     vector(768),
+  embedding     vector(384),
   created_at    timestamptz  NOT NULL DEFAULT now()
 );
 
@@ -85,7 +85,7 @@ CREATE TABLE IF NOT EXISTS knowledge_chunks (
   source_title  text,
   source_url    text,
   content       text         NOT NULL,
-  embedding     vector(768),
+  embedding     vector(384),
   created_at    timestamptz  NOT NULL DEFAULT now()
 );
 

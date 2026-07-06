@@ -15,64 +15,37 @@ import { corsResponse, handleOptions } from '../_shared/cors.ts';
 import { getServiceClient } from '../_shared/supabase-client.ts';
 
 const PROJECT_ID  = Deno.env.get('FIREBASE_PROJECT_ID')!;
-const GROQ_KEY    = Deno.env.get('GROQ_API_KEY') || '';
-// nomic-embed-text produces 768-dim vectors on Groq by default
-const EMBED_MODEL = Deno.env.get('GROQ_EMBED_MODEL') || 'nomic-embed-text-v1_5';
-const EMBED_URL   = 'https://api.groq.com/openai/v1/embeddings';
+// Initialize local embedding session (runs entirely in Deno using ONNX runtime)
+const session = new Supabase.ai.Session('gte-small');
 
-// Deterministic fallback embedder (returns 768 floats in [-1,1])
-function mockEmbedding(text: string, dim = 768) {
-  // Simple deterministic PRNG from string — not semantically meaningful
+// Deterministic fallback embedder (returns 384 floats in [-1,1])
+function mockEmbedding(text: string, dim = 384) {
   let seed = 0;
   for (let i = 0; i < text.length; i++) seed = (seed * 31 + text.charCodeAt(i)) >>> 0;
   const out: number[] = new Array(dim);
   for (let i = 0; i < dim; i++) {
-    // Xorshift-ish mixing
     seed ^= seed << 13;
     seed ^= seed >>> 17;
     seed ^= seed << 5;
-    // map to [-1,1]
     out[i] = ((seed % 10000) / 5000) - 1;
   }
   return out;
 }
 
-/** Call Groq embeddings API */
+/** Generate local embeddings using gte-small */
 async function embedText(text: string): Promise<number[]> {
-  // If no Groq key configured, return deterministic mock embedding
-  if (!GROQ_KEY) return mockEmbedding(text);
-
-  const res = await fetch(EMBED_URL, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${GROQ_KEY}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ model: EMBED_MODEL, input: text }),
-  });
-
-  let json: any = null;
   try {
-    json = await res.json();
-  } catch {
-    json = null;
+    const embedding = await session.run(text, {
+      mean_pool: true,
+      normalize: true,
+    });
+    return Array.from(embedding);
+  } catch (err) {
+    console.warn('Local embedding session failed, using mock fallback:', err);
+    return mockEmbedding(text, 384);
   }
-
-  if (!res.ok) {
-    const errMsg = JSON.stringify(json || { status: res.status });
-    // If model not found or not accessible, fall back to mock embedding
-    const code = json?.error?.code || '';
-    const msg = json?.error?.message || '';
-    if (res.status === 404 || code === 'model_not_found' || /does not exist/i.test(msg)) {
-      // Log and return mock embedding so the app remains usable
-      console.warn('Groq model unavailable; using fallback mock embedding', { model: EMBED_MODEL, status: res.status, error: json });
-      return mockEmbedding(text);
-    }
-    throw new Error(`Groq embedding error ${res.status}: ${errMsg}`);
-  }
-
-  return json.data[0].embedding as number[];
 }
+
 
 /** Split text into overlapping chunks for RAG */
 function chunkText(text: string, chunkSize = 800, overlap = 100): string[] {
