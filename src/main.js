@@ -646,6 +646,11 @@ async function handleSubmit() {
         const driveFileId    = importFile ? importFile.id : null;
         const driveWebViewLink = importFile ? importFile.webViewLink : null;
 
+        // Get media duration in-browser
+        pText.textContent = 'Extracting media duration...';
+        const rawDuration = fileBlob ? await getMediaDuration(fileBlob).catch(() => null) : null;
+        const mediaDuration = rawDuration !== null ? Math.round(rawDuration) : null;
+
         // Create local object URL for immediate in-browser playback
         const localAudioURL = fileBlob ? URL.createObjectURL(fileBlob) : null;
 
@@ -657,6 +662,7 @@ async function handleSubmit() {
           file_url: sourceLoc === 'drive' ? driveWebViewLink : null,
           file_name: importFileName,
           summary: null,
+          duration_sec: mediaDuration,
           metadata: {
             source: sourceLoc === 'drive' ? 'google-drive' : 'local-upload',
             file_name: importFileName
@@ -673,7 +679,7 @@ async function handleSubmit() {
           summary:      null,
           audioData:    localAudioURL || (sourceLoc === 'drive' ? driveWebViewLink : null),
           audioMimeType:fileBlob ? fileBlob.type : null,
-          duration:     null,
+          duration:     mediaDuration,
           metadata:     saved.metadata ?? {},
           embedding:    [],
         };
@@ -1106,7 +1112,7 @@ function buildEntryCard(entry, displayIndex) {
     function setFill(pct) {
       const activeCount = Math.floor((pct / 100) * bars.length);
       bars.forEach((bar, index) => {
-        if (index <= activeCount) {
+        if (index < activeCount) {
           bar.classList.add('active');
         } else {
           bar.classList.remove('active');
@@ -1967,6 +1973,27 @@ function showToast(message, type = 'info') {
     setTimeout(() => el.remove(), 300);
   }, 3800);
 }
+
+function getMediaDuration(fileBlob) {
+  return new Promise((resolve) => {
+    const el = document.createElement(fileBlob.type.startsWith('video/') ? 'video' : 'audio');
+    const objectUrl = URL.createObjectURL(fileBlob);
+    el.src = objectUrl;
+    el.addEventListener('loadedmetadata', () => {
+      URL.revokeObjectURL(objectUrl);
+      resolve(el.duration);
+    });
+    el.addEventListener('error', () => {
+      URL.revokeObjectURL(objectUrl);
+      resolve(null);
+    });
+    setTimeout(() => {
+      URL.revokeObjectURL(objectUrl);
+      resolve(null);
+    }, 4000);
+  });
+}
+
 
 // ── Start ──────────────────────────────────────────────
 bootAuth();
