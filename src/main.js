@@ -935,6 +935,9 @@ function renderRelated(similar) {
 function renderTimeline() {
   const container = $('timeline-container');
   const empty     = $('timeline-empty');
+  const loading   = $('timeline-loading');
+
+  if (loading) loading.classList.add('hidden');
 
   if (entries.length === 0) {
     container.classList.add('hidden');
