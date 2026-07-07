@@ -37,12 +37,13 @@ Deno.serve(async (req: Request) => {
     // ── POST ────────────────────────────────────────────
     if (req.method === 'POST') {
       const body = await req.json();
-      const { title, date, description, memory_id, memory_snippet } = body;
+      const { title, date, description, memory_id, memory_snippet, source_type } = body;
 
       if (!title) return corsResponse({ error: 'title is required' }, 400);
 
       const { data, error } = await db.from('life_events').insert({
         user_id: uid, title, date, description, memory_id, memory_snippet,
+        source_type: source_type ?? 'memory',
       }).select().single();
 
       if (error) throw error;

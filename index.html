@@ -9,7 +9,9 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="/src/style.css" />
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🧠</text></svg>">
 </head>
+
 <body>
 
 
@@ -96,7 +98,13 @@
                 <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-mic"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" x2="12" y1="19" y2="22"/></svg>
                 Record
               </button>
+              <button class="tab" id="tab-import" role="tab"
+                aria-selected="false" aria-controls="panel-import">
+                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-file-input"><path d="M4 22h14a2 2 0 0 0 2-2V7.5L14.5 2H6a2 2 0 0 0-2 2v4"/><polyline points="14 2 14 8 20 8"/><path d="M2 15h10"/><path d="m9 18 3-3-3-3"/></svg>
+                Import
+              </button>
             </div>
+
 
             <!-- Text Panel -->
             <div id="panel-text" class="tab-panel active" role="tabpanel" aria-labelledby="tab-text">
@@ -147,6 +155,56 @@
                 <p id="transcript-text" class="transcript-content" dir="auto" contenteditable="false"></p>
               </div>
             </div>
+
+            <!-- Import Panel -->
+            <div id="panel-import" class="tab-panel" role="tabpanel" aria-labelledby="tab-import" style="display: none;">
+              <div class="import-area" style="display: flex; flex-direction: column; align-items: center; justify-content: center; border: 1px dashed var(--border); border-radius: var(--r-sm); padding: var(--s6) var(--s4); gap: var(--s4); background: var(--surface);">
+                
+                <div class="import-actions" style="display: flex; flex-direction: column; gap: var(--s3); width: 100%;">
+                  <button id="import-local-btn" class="btn" style="display: inline-flex; align-items: center; justify-content: center; gap: var(--s2); width: 100%;">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-upload"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" x2="12" y1="3" y2="15"/></svg>
+                    Upload Local File
+                  </button>
+                  <button id="import-drive-btn" class="btn btn-secondary" style="display: inline-flex; align-items: center; justify-content: center; gap: var(--s2); width: 100%;">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-chrome"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="4"/><line x1="21.17" x2="12" y1="8" y2="8"/><line x1="3.95" x2="8.58" y1="6.06" y2="14.07"/><line x1="10.88" x2="15.42" y1="21.94" y2="14.07"/></svg>
+                    Import from Google Drive
+                  </button>
+                </div>
+                
+                <input type="file" id="local-file-selector" accept=".txt,.md,.mp3,.wav,.m4a,.webm,.mp4" style="display: none;">
+                <p style="font-size: 13px; color: var(--text-2); margin: 0; text-align: center;">Supports Text (.txt, .md), Audio (.mp3, .wav, .m4a, .webm), and Video (.mp4)</p>
+              </div>
+
+              <!-- Selected File Preview -->
+              <div id="import-preview" class="transcript-preview hidden" style="margin-top: var(--s4);">
+                <div class="transcript-header">
+                  <span class="transcript-label" style="display:inline-flex;align-items:center;gap:4px;">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-file-text"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/></svg>
+                    Import File
+                  </span>
+                  <div class="transcript-actions">
+                    <button id="discard-import" class="btn-link btn-link-danger" aria-label="Discard import" style="display:inline-flex;align-items:center;gap:4px;">
+                      <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-trash-2"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><line x1="10" x2="10" y1="11" y2="17"/><line x1="14" x2="14" y1="11" y2="17"/></svg>
+                      Discard
+                    </button>
+                  </div>
+                </div>
+                <div style="padding: var(--s3); display: flex; flex-direction: column; gap: var(--s2);">
+                  <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <span id="import-filename" style="font-weight: 600; color: var(--text); font-size: 13.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 70%;"></span>
+                    <span id="import-filesource" style="font-size: 11px; background: var(--border); padding: 2px 6px; border-radius: var(--r-sm); color: var(--text-2); font-weight: 600; text-transform: uppercase;"></span>
+                  </div>
+                  <span id="import-filesize" style="font-size: 12px; color: var(--text-3);"></span>
+                </div>
+              </div>
+
+              <!-- Processing Indicator -->
+              <div id="import-processing-indicator" class="transcribing hidden" aria-live="polite" style="margin-top: var(--s3);">
+                <div class="spinner" aria-hidden="true"></div>
+                <span id="import-processing-text">Processing file...</span>
+              </div>
+            </div>
+
 
             <!-- Submit -->
             <div class="submit-area" style="margin-top: var(--s4);">
@@ -202,6 +260,12 @@
 
         <!-- ── Life Events view ───────────────── -->
         <div id="view-events" class="panel-view hidden" role="tabpanel" aria-labelledby="vtab-events">
+          <div style="display: flex; justify-content: flex-end; padding: 0 0 var(--s3) 0;">
+            <button id="add-event-btn" class="btn btn-secondary" style="display:inline-flex;align-items:center;gap:var(--s2);font-size:13px;">
+              <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-plus"><line x1="12" x2="12" y1="5" y2="19"/><line x1="5" x2="19" y1="12" y2="12"/></svg>
+              Add Event
+            </button>
+          </div>
           <div id="events-empty" class="timeline-empty">
             <div class="empty-icon" aria-hidden="true">
               <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-calendar-days"><rect width="18" height="18" x="3" y="4" rx="2" ry="2"/><line x1="16" x2="16" y1="2" y2="6"/><line x1="8" x2="8" y1="2" y2="6"/><line x1="3" x2="21" y1="10" y2="10"/><path d="M8 14h.01"/><path d="M12 14h.01"/><path d="M16 14h.01"/><path d="M8 18h.01"/><path d="M12 18h.01"/><path d="M16 18h.01"/></svg>
@@ -241,9 +305,37 @@
       <div class="modal-footer">
         <button id="approve-all-pending-btn" class="btn btn-primary" style="width:100%;">Approve All</button>
       </div>
-    </div>
-  </div>
+    <!-- Google Drive File Browser Modal -->
+    <div id="drive-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="drive-modal-title">
+      <div class="modal-backdrop" id="drive-modal-backdrop"></div>
+      <div class="modal-content" style="max-width: 500px;">
+        <div class="modal-header">
+          <h2 class="modal-title" id="drive-modal-title">Google Drive Files</h2>
+          <button class="close-btn" id="close-drive-btn" aria-label="Close modal">
+            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-x"><line x1="18" x2="6" y1="6" y2="18"/><line x1="6" x2="18" y1="6" y2="18"/></svg>
+          </button>
+        </div>
+        
+        <div style="padding: var(--s2) var(--s4) var(--s3); display: flex; gap: var(--s2);">
+          <input type="text" id="drive-search-input" class="search-input" placeholder="Search files by name..." style="flex: 1; padding: var(--s2) var(--s3); font-size: 13px; border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--bg); color: var(--text);">
+        </div>
 
-  <script type="module" src="/src/main.js"></script>
-</body>
+        <div class="modal-body" style="padding: 0 var(--s4) var(--s4); max-height: 380px; overflow-y: auto;">
+          <div id="drive-files-list" style="display: flex; flex-direction: column;">
+            <div class="loading-state" id="drive-loading-state" style="padding: var(--s6) 0; text-align: center; color: var(--text-2);">
+              <div class="spinner" style="margin: 0 auto var(--s2);"></div>
+              <span id="drive-loading-text">Connecting to Google Drive...</span>
+            </div>
+            <div class="empty-state hidden" id="drive-empty-state" style="padding: var(--s6) 0; text-align: center; color: var(--text-3); font-size: 13px;">
+              No supported files found in your Google Drive.
+            </div>
+            <div id="drive-files-container" style="display: flex; flex-direction: column; gap: var(--s1);"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Main JS entrypoint -->
+    <script type="module" src="/src/main.js"></script>
+  </body>
 </html>

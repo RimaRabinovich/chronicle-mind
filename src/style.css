@@ -268,37 +268,38 @@ body {
 .event-source {
   margin-top: var(--s3); padding-top: var(--s3);
   border-top: 1px solid var(--border);
+  display: flex; align-items: center; gap: 4px;
   font-size: 11px; color: var(--text-3);
-  display: flex; align-items: center;
   cursor: pointer; border-radius: var(--r-sm);
   transition: color var(--dur) var(--ease);
   user-select: none;
 }
-.event-source:hover {
-  color: var(--purple);
+.event-source:hover { color: var(--tag-color, var(--accent)); }
+.event-source--static { cursor: default; }
+.event-source--static:hover { color: var(--text-3); }
+.event-source-icon {
+  display: inline-flex; align-items: center;
+  color: var(--tag-color, var(--accent));
+  flex-shrink: 0;
+}
+.event-source-label {
+  font-family: monospace;
+  font-size: 11px; font-weight: 600;
+  color: var(--tag-color, var(--accent));
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.event-source-divider { color: var(--text-3); margin: 0 3px; }
+.event-source-text {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  flex: 1; color: var(--text-3);
 }
 .event-source-arrow {
-  font-size: 12px;
-  margin-right: 4px;
   display: inline-flex; align-items: center;
+  color: var(--text-3);
   transition: transform var(--dur) var(--ease);
 }
 .event-source:hover .event-source-arrow { transform: translate(1px, -1px); }
-.event-source-label {
-  font-family: monospace;
-  font-size: 11px; font-weight: 550;
-  color: var(--text-2);
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-}
-.event-source-divider {
-  color: var(--text-3);
-  margin: 0 4px;
-}
-.event-source-text {
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  flex: 1;
-}
 
 /* Edit button — top-right of card, appears on hover */
 .event-card-actions {
@@ -792,7 +793,7 @@ input:focus, textarea:focus {
   border-radius: 50%;
   animation: spin 0.7s linear infinite;
 }
-@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
 
 /* ── Transcript preview ─────────────────────────────── */
 .transcript-preview {
@@ -1318,4 +1319,43 @@ input[type="date"].input-field { color-scheme: light; }
   .input-panel, .timeline-panel { padding: var(--s4); }
   .brand-name { font-size: 17px; }
 }
+
+/* ── Google Drive custom file browser styles ─────────── */
+.drive-file-item {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: var(--s3);
+  border: 1px solid var(--border); border-radius: var(--r-sm);
+  background: var(--surface);
+  transition: all var(--dur) var(--ease);
+  cursor: pointer;
+  gap: var(--s3);
+  margin-bottom: var(--s2);
+}
+.drive-file-item:hover {
+  background: var(--surface-hover);
+  border-color: var(--text-3);
+}
+.drive-file-info {
+  display: flex; align-items: center; gap: var(--s3);
+  overflow: hidden; flex: 1;
+}
+.drive-file-icon {
+  color: var(--text-2); display: flex; align-items: center; justify-content: center;
+  flex-shrink: 0;
+}
+.drive-file-details {
+  display: flex; flex-direction: column; overflow: hidden;
+}
+.drive-file-name {
+  font-size: 13.5px; font-weight: 600; color: var(--text);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.drive-file-meta {
+  font-size: 11px; color: var(--text-3); margin-top: 2px;
+}
+.drive-file-select-btn {
+  padding: 4px 10px; font-size: 11px; font-weight: 700;
+  border-radius: var(--r-sm);
+}
+
 

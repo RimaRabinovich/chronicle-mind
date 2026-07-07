@@ -57,3 +57,16 @@ export async function reauthenticateUser(user) {
   await reauthenticateWithPopup(user, provider);
 }
 
+/** Request Google Drive read-only access scope and return the OAuth token. */
+export async function getDriveAccessToken() {
+  const provider = new GoogleAuthProvider();
+  provider.addScope('https://www.googleapis.com/auth/drive.readonly');
+  const result = await signInWithPopup(auth, provider);
+  const credential = GoogleAuthProvider.credentialFromResult(result);
+  if (!credential?.accessToken) {
+    throw new Error('Failed to retrieve access token from Google.');
+  }
+  return credential.accessToken;
+}
+
+

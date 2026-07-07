@@ -24,7 +24,9 @@ import { transcribeAudio }           from './transcription.js';
 import { AudioRecorder }             from './recorder.js';
 
 import { summarizeContent, extractEvents } from './ai.js';
-import { initAuth, signInWithGoogle, signOutUser, onAuthChange, reauthenticateUser } from './auth.js';
+import { initAuth, signInWithGoogle, signOutUser, onAuthChange, reauthenticateUser, getDriveAccessToken } from './auth.js';
+import { listDriveFiles, downloadDriveFileText, downloadDriveFileBlob } from './services/googleDrive.js';
+
 
 
 // ── DOM helpers ────────────────────────────────────────
@@ -45,6 +47,14 @@ let   eventsCount = 0;           // kept in sync by renderEventsTimeline
 let   pendingEvents   = [];      // holds extracted events before user approval
 let   appInitialized  = false;   // prevents duplicate init() on auth re-fires
 
+// File Import state
+let importFile         = null;        // File object (local) or metadata object (Drive)
+let importSource       = '';          // 'local' | 'drive'
+let importDriveToken   = '';          // transient Google Drive access token
+let importDriveFiles   = [];          // list of matching Drive files
+let importRegistered   = false;       // registration guard for import panel listeners
+
+
 // Prevent duplicate event listener attachments on sign-out/sign-in cycles
 let entryInteractionsRegistered = false;
 let eventInteractionsRegistered = false;
@@ -64,9 +74,11 @@ async function init() {
     setupViewTabs();
     setupTabs();
     setupRecorder();
+    setupImport();
     setupSubmit();
     setupEntryInteractions();
     setupEventsInteractions();
+    setupAddEventBtn();
     setupPendingEvents();
   } catch (err) {
     console.error('App initialization failed', err);
@@ -76,6 +88,7 @@ async function init() {
     );
   }
 }
+
 
 /** Boot the auth layer then gate on sign-in */
 function bootAuth() {
@@ -295,8 +308,8 @@ function setupTabs() {
   tabsRegistered = true;
 
   $('tab-text').addEventListener('click',  () => switchTab('text'));
-
   $('tab-audio').addEventListener('click', () => switchTab('audio'));
+  $('tab-import').addEventListener('click', () => switchTab('import'));
 
   // Character counter
   $('thought-input').addEventListener('input', () => {
@@ -313,18 +326,30 @@ function setupTabs() {
 
 function switchTab(mode) {
   currentMode = mode;
-  const isText  = mode === 'text';
+  const isText   = mode === 'text';
+  const isAudio  = mode === 'audio';
+  const isImport = mode === 'import';
 
   $('tab-text').classList.toggle('active', isText);
-  $('tab-audio').classList.toggle('active', !isText);
+  $('tab-audio').classList.toggle('active', isAudio);
+  $('tab-import').classList.toggle('active', isImport);
+  
   $('tab-text').setAttribute('aria-selected', String(isText));
-  $('tab-audio').setAttribute('aria-selected', String(!isText));
+  $('tab-audio').setAttribute('aria-selected', String(isAudio));
+  $('tab-import').setAttribute('aria-selected', String(isImport));
 
   $('panel-text').classList.toggle('active', isText);
-  $('panel-audio').classList.toggle('active', !isText);
+  $('panel-text').style.display = isText ? 'block' : 'none';
+  
+  $('panel-audio').classList.toggle('active', isAudio);
+  $('panel-audio').style.display = isAudio ? 'block' : 'none';
+  
+  $('panel-import').classList.toggle('active', isImport);
+  $('panel-import').style.display = isImport ? 'block' : 'none';
 
   refreshSubmitBtn();
 }
+
 
 // ── Recorder ───────────────────────────────────────────
 function setupRecorder() {
@@ -435,9 +460,184 @@ async function stopRecording() {
 }
 
 function updateTimer() {
+
+
   const m = Math.floor(recSeconds / 60);
   const s = recSeconds % 60;
   $('recording-timer').textContent = `${m}:${s.toString().padStart(2, '0')}`;
+}
+
+// ── File Import Actions ────────────────────────────────
+
+function setupImport() {
+  if (importRegistered) return;
+  importRegistered = true;
+
+  // Trigger local file selection
+  $('import-local-btn').addEventListener('click', () => {
+    $('local-file-selector').click();
+  });
+
+  // Handle local file selection
+  $('local-file-selector').addEventListener('change', (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    importFile = file;
+    importSource = 'local';
+
+    // Show preview card
+    $('import-filename').textContent = file.name;
+    $('import-filesource').textContent = 'Local File';
+    $('import-filesize').textContent = formatBytes(file.size);
+    $('import-preview').classList.remove('hidden');
+
+    refreshSubmitBtn();
+  });
+
+  // Open Drive modal
+  $('import-drive-btn').addEventListener('click', async () => {
+    await handleOpenDriveModal();
+  });
+
+  // Discard selected file
+  $('discard-import').addEventListener('click', () => {
+    discardSelectedImport();
+  });
+
+  // Close Drive modal
+  $('close-drive-btn').addEventListener('click', closeDriveModal);
+  $('drive-modal-backdrop').addEventListener('click', closeDriveModal);
+
+  // Search Drive files
+  $('drive-search-input').addEventListener('input', (e) => {
+    const query = e.target.value.toLowerCase();
+    filterDriveFilesList(query);
+  });
+}
+
+function formatBytes(bytes, decimals = 2) {
+  if (!bytes) return '0 Bytes';
+  const k = 1024;
+  const dm = decimals < 0 ? 0 : decimals;
+  const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
+}
+
+function discardSelectedImport() {
+  importFile = null;
+  importSource = '';
+  $('local-file-selector').value = '';
+  $('import-preview').classList.add('hidden');
+  refreshSubmitBtn();
+}
+
+function closeDriveModal() {
+  $('drive-modal').classList.add('hidden');
+}
+
+async function handleOpenDriveModal() {
+  $('drive-modal').classList.remove('hidden');
+  $('drive-loading-state').classList.remove('hidden');
+  $('drive-empty-state').classList.add('hidden');
+  $('drive-files-container').innerHTML = '';
+  $('drive-search-input').value = '';
+
+  try {
+    if (!importDriveToken) {
+      $('drive-loading-text').textContent = 'Authorizing Google Drive...';
+      importDriveToken = await getDriveAccessToken();
+    }
+
+    $('drive-loading-text').textContent = 'Fetching files from Google Drive...';
+    const files = await listDriveFiles(importDriveToken);
+    importDriveFiles = files;
+    
+    $('drive-loading-state').classList.add('hidden');
+    renderDriveFiles(files);
+  } catch (err) {
+    console.error('Google Drive access failed:', err);
+    showToast(`Google Drive access failed: ${err.message}`, 'error');
+    closeDriveModal();
+  }
+}
+
+function renderDriveFiles(files) {
+  const container = $('drive-files-container');
+  container.innerHTML = '';
+  
+  if (!files || files.length === 0) {
+    $('drive-empty-state').classList.remove('hidden');
+    return;
+  }
+  
+  $('drive-empty-state').classList.add('hidden');
+
+  files.forEach(file => {
+    const item = document.createElement('div');
+    item.className = 'drive-file-item';
+    
+    // Choose icon based on file type
+    let iconSvg = '';
+    if (file.mimeType.startsWith('text/')) {
+      iconSvg = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-file-text"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/></svg>';
+    } else if (file.mimeType.startsWith('audio/')) {
+      iconSvg = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-music"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>';
+    } else if (file.mimeType.startsWith('video/')) {
+      iconSvg = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-video"><path d="m22 8-6 4 6 4V8Z"/><rect width="14" height="12" x="2" y="6" rx="2" ry="2"/></svg>';
+    } else {
+      iconSvg = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-file"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/></svg>';
+    }
+    
+    const sizeText = file.size ? formatBytes(parseInt(file.size)) : 'Unknown size';
+
+    item.innerHTML = `
+      <div class="drive-file-info">
+        <div class="drive-file-icon">${iconSvg}</div>
+        <div class="drive-file-details">
+          <span class="drive-file-name" title="${file.name}">${file.name}</span>
+          <span class="drive-file-meta">${sizeText}</span>
+        </div>
+      </div>
+      <button class="btn btn-secondary drive-file-select-btn" data-file-id="${file.id}">Select</button>
+    `;
+    
+    // Select button handler
+    item.querySelector('.drive-file-select-btn').addEventListener('click', (e) => {
+      e.stopPropagation();
+      selectDriveFile(file);
+    });
+    
+    item.addEventListener('click', () => {
+      selectDriveFile(file);
+    });
+
+    container.appendChild(item);
+  });
+}
+
+function selectDriveFile(file) {
+  importFile = file;
+  importSource = 'drive';
+  
+  // Show preview card
+  $('import-filename').textContent = file.name;
+  $('import-filesource').textContent = 'Google Drive';
+  $('import-filesize').textContent = file.size ? formatBytes(parseInt(file.size)) : 'Unknown size';
+  $('import-preview').classList.remove('hidden');
+  
+  closeDriveModal();
+  refreshSubmitBtn();
+}
+
+function filterDriveFilesList(query) {
+  if (!query) {
+    renderDriveFiles(importDriveFiles);
+    return;
+  }
+  const filtered = importDriveFiles.filter(f => f.name.toLowerCase().includes(query));
+  renderDriveFiles(filtered);
 }
 
 // ── Submit ─────────────────────────────────────────────
@@ -445,17 +645,181 @@ function setupSubmit() {
   if (submitRegistered) return;
   submitRegistered = true;
 
+
   $('submit-btn').addEventListener('click', handleSubmit);
 
 }
 
 function refreshSubmitBtn() {
-  const hasText  = currentMode === 'text'  && $('thought-input').value.trim().length > 0;
-  const hasAudio = currentMode === 'audio' && $('transcript-text').textContent.trim().length > 0;
-  $('submit-btn').disabled = !hasText && !hasAudio;
+  const hasText   = currentMode === 'text'   && $('thought-input').value.trim().length > 0;
+  const hasAudio  = currentMode === 'audio'  && $('transcript-text').textContent.trim().length > 0;
+  const hasImport = currentMode === 'import' && importFile !== null;
+  $('submit-btn').disabled = !hasText && !hasAudio && !hasImport;
 }
 
 async function handleSubmit() {
+  // ── Loading state ──
+  const btn   = $('submit-btn');
+  const label = $('submit-label');
+  btn.disabled  = true;
+  label.textContent = 'Saving…';
+
+  if (currentMode === 'import') {
+    const apiKey = getGroqKey();
+    if (!apiKey) {
+      showToast('Add a Groq API key in ⚙️ Settings to process imported files.', 'error');
+      btn.disabled = false;
+      label.textContent = 'Save memory';
+      return;
+    }
+
+    const pIndicator = $('import-processing-indicator');
+    const pText = $('import-processing-text');
+    pIndicator.classList.remove('hidden');
+
+    try {
+      let content = '';
+      const isText = importFile.mimeType ? 
+        (importFile.mimeType.startsWith('text/') || importFile.name.endsWith('.txt') || importFile.name.endsWith('.md')) :
+        (importFile.type.startsWith('text/') || importFile.name.endsWith('.txt') || importFile.name.endsWith('.md'));
+        
+      const isVideo = importFile.mimeType ? 
+        importFile.mimeType.startsWith('video/') : 
+        importFile.type.startsWith('video/');
+
+      const isAudio = importFile.mimeType ? 
+        importFile.mimeType.startsWith('audio/') : 
+        importFile.type.startsWith('audio/');
+
+      let fileBlob = null;
+
+      // ── 1. Fetch File Content ──
+      if (importSource === 'drive') {
+        pText.textContent = 'Downloading file from Google Drive...';
+        if (isText) {
+          content = await downloadDriveFileText(importDriveToken, importFile.id);
+        } else {
+          fileBlob = await downloadDriveFileBlob(importDriveToken, importFile.id);
+        }
+      } else {
+        pText.textContent = 'Reading local file...';
+        if (isText) {
+          content = await new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(reader.result);
+            reader.onerror = reject;
+            reader.readAsText(importFile);
+          });
+        } else {
+          fileBlob = importFile;
+        }
+      }
+
+      // ── 2. Transcribe Audio/Video if needed ──
+      if (!isText && fileBlob) {
+        pText.textContent = 'Transcribing media with Groq Whisper...';
+        content = await transcribeAudio(fileBlob, apiKey);
+      }
+
+      if (!content.trim()) {
+        throw new Error('No content could be extracted or transcribed from the file.');
+      }
+
+      // ── 3. Generate Summary ──
+      pText.textContent = 'Summarizing content with Groq LLM...';
+      const summary = await summarizeContent(content, apiKey);
+
+      // ── 4. Save to Database ──
+      pText.textContent = 'Saving to database...';
+      const type = isVideo ? 'video' : (isAudio ? 'audio' : 'text');
+      
+      const saved = await saveMemory({
+        content: content,
+        type: type,
+        source: importSource === 'drive' ? 'google-drive' : 'local-upload',
+        file_url: importSource === 'drive' ? importFile.webViewLink : null,
+        file_name: importFile.name,
+        summary: summary,
+        metadata: {
+          source: importSource === 'drive' ? 'google-drive' : 'local-upload',
+          file_name: importFile.name
+        }
+      });
+      const id = saved.id;
+
+      // ── 5. Trigger Server-side Embedding ──
+      triggerEmbedding(id, content);
+
+      // ── 6. Handle Local File Upload in the background (non-blocking) ──
+      if (importSource === 'local' && !isText && fileBlob) {
+        const recordedBlob = fileBlob;
+        const fileName = `${id}-${importFile.name}`;
+        (async () => {
+          try {
+
+            const { path } = await uploadFile(recordedBlob, type, fileName);
+            await updateMemory({
+              id: id,
+              file_url: path,
+              file_type: recordedBlob.type,
+              metadata: {
+                source: 'local-upload',
+                file_name: importFile.name,
+                storage_path: path
+              }
+            });
+            const entryInList = entries.find(e => e.id === id);
+            if (entryInList) {
+              entryInList.audioData = path;
+            }
+
+          } catch (err) {
+            console.error('Asynchronous file upload failed:', err);
+            showToast('Failed to upload file to storage, but summary and transcript are saved.', 'error');
+          }
+        })();
+      }
+
+      // ── 7. Map to Local Entry and Render ──
+      const timestamp = new Date().toISOString();
+      const entry = {
+        id:           saved.id,
+        timestamp:    saved.created_at || timestamp,
+        type:         saved.type,
+        content:      saved.content,
+        summary:      saved.summary ?? null,
+        audioData:    (importSource === 'drive' ? importFile.webViewLink : null),
+        audioMimeType:fileBlob ? fileBlob.type : null,
+        duration:     null,
+        metadata:     saved.metadata ?? {},
+        embedding:    [],
+      };
+
+      entries.unshift(entry);
+      updateCountBadge();
+      renderTimeline();
+      setTimeout(() => highlightEntry(id), 120);
+
+      // ── 8. Reset state ──
+      discardSelectedImport();
+      showToast('File imported successfully!', 'success');
+
+      // ── 9. Extract Events (background) ──
+      // sourceType maps file type to event tag
+      const evSourceType = type === 'video' ? 'video' : type === 'audio' ? 'audio' : 'memory';
+      extractAndSaveEvents(id, content, evSourceType);
+
+    } catch (err) {
+      console.error('Import failed:', err);
+      showToast(`Import failed: ${err.message}`, 'error');
+    } finally {
+      pIndicator.classList.add('hidden');
+      btn.disabled = false;
+      label.textContent = 'Save memory';
+    }
+    return;
+  }
+
   const content = currentMode === 'text'
     ? $('thought-input').value.trim()
     : $('transcript-text').textContent.trim();
@@ -464,11 +828,6 @@ async function handleSubmit() {
 
 
   // ── Loading state ──
-  const btn   = $('submit-btn');
-  const label = $('submit-label');
-  btn.disabled  = true;
-  label.textContent = 'Saving…';
-
   try {
     const timestamp = new Date().toISOString();
 
@@ -532,7 +891,7 @@ async function handleSubmit() {
           if (entryInList) {
             entryInList.audioData = path;
           }
-          console.log('Background upload completed successfully:', path);
+
         } catch (err) {
           console.error('Asynchronous audio upload failed:', err);
           showToast('Failed to upload audio to cloud, but transcript is saved.', 'error');
@@ -555,12 +914,14 @@ async function handleSubmit() {
     showToast('Memory saved!', 'success');
 
     // 8. Extract life events in the background (non-blocking)
-    extractAndSaveEvents(id, content);
+    const evSrc = currentMode === 'audio' ? 'audio' : 'memory';
+    extractAndSaveEvents(id, content, evSrc);
 
   } catch (err) {
     showToast(`Error: ${err.message}`, 'error');
     console.error(err);
   } finally {
+    btn.disabled  = false;
     label.textContent = 'Save memory';
     refreshSubmitBtn();
   }
@@ -677,9 +1038,25 @@ function buildEntryCard(entry, displayIndex) {
   const time  = formatTime(entry.timestamp);
   const indexStr = displayIndex ? displayIndex.toString().padStart(2, '0') : '';
 
-  const badge = entry.type === 'audio'
-    ? '<span class="entry-type-badge entry-type-audio" style="display:inline-flex;align-items:center;gap:4px;"><svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-mic"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" x2="12" y1="19" y2="22"/></svg>VOICE</span>'
-    : '<span class="entry-type-badge entry-type-text" style="display:inline-flex;align-items:center;gap:4px;"><svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-file-text"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/></svg>TEXT</span>';
+  let badge = '';
+  if (entry.type === 'video') {
+    badge = '<span class="entry-type-badge entry-type-video" style="display:inline-flex;align-items:center;gap:4px;color:#f97316;border:1px solid #fed7aa;background:rgba(249,115,22,0.05);"><svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-video"><path d="m22 8-6 4 6 4V8Z"/><rect width="14" height="12" x="2" y="6" rx="2" ry="2"/></svg>VIDEO</span>';
+  } else if (entry.type === 'audio') {
+    badge = '<span class="entry-type-badge entry-type-audio" style="display:inline-flex;align-items:center;gap:4px;"><svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-mic"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" x2="12" y1="19" y2="22"/></svg>VOICE</span>';
+  } else {
+    badge = '<span class="entry-type-badge entry-type-text" style="display:inline-flex;align-items:center;gap:4px;"><svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-file-text"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/></svg>TEXT</span>';
+  }
+
+  let sourceBadge = '';
+  if (entry.metadata?.source === 'google-drive') {
+    const filename = entry.metadata.file_name || 'Drive File';
+    const fileUrl = entry.audioData || '#';
+    sourceBadge = `<a href="${esc(fileUrl)}" target="_blank" class="entry-type-badge entry-type-drive" style="display:inline-flex;align-items:center;gap:4px;color:var(--purple);border:1px solid var(--purple);text-decoration:none;background:rgba(168,85,247,0.05);"><svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-chrome"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="4"/><line x1="21.17" x2="12" y1="8" y2="8"/><line x1="3.95" x2="8.58" y1="6.06" y2="14.07"/><line x1="10.88" x2="15.42" y1="21.94" y2="14.07"/></svg>DRIVE: ${esc(filename)}</a>`;
+  } else if (entry.metadata?.source === 'local-upload') {
+    const filename = entry.metadata.file_name || 'Local File';
+    sourceBadge = `<span class="entry-type-badge entry-type-local" style="display:inline-flex;align-items:center;gap:4px;color:var(--text-2);border:1px solid var(--border);"><svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-upload"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" x2="12" y1="3" y2="15"/></svg>LOCAL: ${esc(filename)}</span>`;
+  }
+
 
   let audioHTML = '';
   if (entry.type === 'audio') {
@@ -732,9 +1109,11 @@ function buildEntryCard(entry, displayIndex) {
     <div class="entry-meta">
       <div class="entry-meta-left">
         ${badge}
+        ${sourceBadge}
         <span class="entry-time">${time}</span>
       </div>
       <div class="entry-meta-right">
+
         <button class="entry-delete-btn" data-delete-id="${entry.id}" aria-label="Delete memory" title="Delete memory"><svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-trash-2"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><line x1="10" x2="10" y1="11" y2="17"/><line x1="14" x2="14" y1="11" y2="17"/></svg></button>
         <span class="entry-index">${indexStr}</span>
       </div>
@@ -971,20 +1350,21 @@ async function handleDeleteEntry(id) {
     await new Promise(r => setTimeout(r, 200));
   }
 
-  // Find entry in local list before deleting to remove private audio file if exists
+  // Find entry in local list before deleting to remove private audio/video file if exists
   const entry = entries.find(e => e.id === id);
-  if (entry && entry.type === 'audio' && entry.audioData) {
+  if (entry && (entry.type === 'audio' || entry.type === 'video') && entry.audioData) {
     const isPrivatePath = !entry.audioData.startsWith('blob:') && !entry.audioData.startsWith('http');
     if (isPrivatePath) {
       try {
         const { deleteFile } = await import('./services/storage.js');
         await deleteFile(entry.audioData);
-        console.log('Audio file deleted from storage bucket:', entry.audioData);
+
       } catch (err) {
-        console.warn('Failed to delete audio file from bucket:', err);
+        console.warn('Failed to delete file from bucket:', err);
       }
     }
   }
+
 
   await deleteMemory(id);
   await deleteEventsByMemoryId(id);   // clean up extracted events too
@@ -1037,17 +1417,22 @@ async function handleSummarize(btn) {
 }
 
 // ── Event Extraction ───────────────────────────────────
-async function extractAndSaveEvents(memoryId, content) {
+async function extractAndSaveEvents(memoryId, content, sourceType = 'memory') {
   const key = getGroqKey();
   if (!key) return;
 
+
   try {
     const events = await extractEvents(content, key);
+
     let foundNew = false;
     for (const ev of events) {
       pendingEvents.push({
         id:            crypto.randomUUID(),
         memoryId,
+        memory_id:     memoryId,
+        sourceType,
+        source_type:   sourceType,
         date:          ev.date,
         title:         ev.title,
         description:   ev.description,
@@ -1058,10 +1443,11 @@ async function extractAndSaveEvents(memoryId, content) {
     if (foundNew) {
       showPendingEventsModal();
     }
-  } catch {
-    // Silent fail — event extraction is best-effort
+  } catch (err) {
+    console.error('Failed to extract events during ingestion:', err);
   }
 }
+
 
 // ── Events Timeline Render ─────────────────────────────
 async function renderEventsTimeline() {
@@ -1114,9 +1500,52 @@ async function renderEventsTimeline() {
 }
 
 function buildEventCard(ev) {
+  // Normalise DB snake_case → camelCase (events from Supabase use memory_id / source_type)
+  const memoryId   = ev.memoryId   ?? ev.memory_id   ?? null;
+  const sourceType = ev.sourceType ?? ev.source_type ?? 'memory';
+
   const d       = new Date(ev.date + 'T12:00:00');
   const dateStr = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
   const year    = ev.date.slice(0, 4);
+
+  // ── Source tag config ────────────────────────────────
+  const tagConfig = {
+    memory: {
+      label: 'From Memory',
+      icon: `<svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>`,
+      color: 'var(--accent)',
+      clickable: !!memoryId,
+    },
+    audio: {
+      label: 'From Audio',
+      icon: `<svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" x2="12" y1="19" y2="22"/></svg>`,
+      color: '#8b5cf6',
+      clickable: !!memoryId,
+    },
+    video: {
+      label: 'From Video',
+      icon: `<svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="m22 8-6 4 6 4V8Z"/><rect width="14" height="12" x="2" y="6" rx="2" ry="2"/></svg>`,
+      color: '#f59e0b',
+      clickable: !!memoryId,
+    },
+    manual: {
+      label: 'Added manually',
+      icon: `<svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>`,
+      color: 'var(--text-3)',
+      clickable: false,
+    },
+  };
+  const tag = tagConfig[sourceType] ?? tagConfig.memory;
+
+  // ── Memory link label (date of source memory) ────────
+  let sourceLabel = 'View source memory';
+  if (memoryId) {
+    const srcEntry = entries.find(e => e.id === memoryId);
+    if (srcEntry?.timestamp) {
+      const memDate = new Date(srcEntry.timestamp);
+      sourceLabel = memDate.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
+    }
+  }
 
   const card = document.createElement('div');
   card.className   = 'event-card';
@@ -1134,11 +1563,15 @@ function buildEventCard(ev) {
       </div>
       <div class="event-title" dir="auto">${esc(ev.title)}</div>
       <p class="event-description" dir="auto">${esc(ev.description)}</p>
-      <div class="event-source" data-source-memory="${ev.memoryId}" role="button" tabindex="0" title="Jump to memory">
-        <span class="event-source-arrow" style="display:inline-flex;align-items:center;"><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-arrow-up-right"><path d="M7 7h10v10"/><path d="M7 17 17 7"/></svg></span>
-        <span class="event-source-label">FROM MEMORY</span>
+      <div class="event-source${tag.clickable ? '' : ' event-source--static'}"
+           ${tag.clickable ? `data-source-memory="${memoryId}" role="button" tabindex="0" title="Jump to source memory"` : ''}
+           style="--tag-color:${tag.color}">
+        <span class="event-source-icon">${tag.icon}</span>
+        <span class="event-source-label">${tag.label}</span>
+        ${tag.clickable ? `
         <span class="event-source-divider">/</span>
-        <span class="event-source-text">${esc(ev.memorySnippet)}…</span>
+        <span class="event-source-text">${esc(sourceLabel)}</span>
+        <span class="event-source-arrow" style="display:inline-flex;align-items:center;margin-left:2px;"><svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 7h10v10"/><path d="M7 17 17 7"/></svg></span>` : ''}
       </div>
     </div>
 
@@ -1263,6 +1696,84 @@ function setupEventsInteractions() {
       }
       return;
     }
+  });
+
+  // ── Keyboard a11y: Enter/Space on source link ──
+  $('events-container').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      const srcLink = e.target.closest('[data-source-memory]');
+      if (srcLink) { e.preventDefault(); srcLink.click(); }
+    }
+  });
+}
+
+// ── Manual Add Event ────────────────────────────────────
+function setupAddEventBtn() {
+  const btn = $('add-event-btn');
+  if (!btn) return;
+  btn.addEventListener('click', () => {
+    // If inline form already exists, focus it
+    const existing = document.getElementById('manual-event-form');
+    if (existing) { existing.querySelector('input[type="date"]').focus(); return; }
+
+    const form = document.createElement('div');
+    form.id = 'manual-event-form';
+    form.style.cssText = 'background:var(--surface);border:1px solid var(--border);border-radius:var(--r-md);padding:var(--s4);margin-bottom:var(--s4);display:flex;flex-direction:column;gap:var(--s3);';
+    form.innerHTML = `
+      <div style="font-weight:600;font-size:13px;color:var(--text-2);text-transform:uppercase;letter-spacing:.05em">New Life Event</div>
+      <div class="event-form-row">
+        <label class="event-form-label">Date</label>
+        <input id="manual-ev-date" class="event-date-input input-field" type="date" value="${new Date().toISOString().slice(0,10)}" />
+      </div>
+      <div class="event-form-row">
+        <label class="event-form-label">Title</label>
+        <input id="manual-ev-title" class="event-title-input input-field" type="text" dir="auto" placeholder="e.g. Started university" />
+      </div>
+      <div class="event-form-row">
+        <label class="event-form-label">Details</label>
+        <textarea id="manual-ev-desc" class="event-desc-input input-field" rows="2" dir="auto" placeholder="Optional description…"></textarea>
+      </div>
+      <div class="event-edit-actions">
+        <button id="manual-ev-save" class="btn btn-primary btn-sm">✓ Add to Timeline</button>
+        <button id="manual-ev-cancel" class="btn btn-ghost btn-sm">Cancel</button>
+      </div>
+    `;
+
+    const container = $('events-container');
+    const viewEl    = $('view-events');
+
+    // Insert before timeline or at start of view
+    if (container && !container.classList.contains('hidden')) {
+      viewEl.insertBefore(form, container);
+    } else {
+      viewEl.insertBefore(form, viewEl.querySelector('#events-empty'));
+    }
+
+    form.querySelector('#manual-ev-cancel').addEventListener('click', () => form.remove());
+
+    form.querySelector('#manual-ev-save').addEventListener('click', async () => {
+      const date  = form.querySelector('#manual-ev-date').value.trim();
+      const title = form.querySelector('#manual-ev-title').value.trim();
+      const desc  = form.querySelector('#manual-ev-desc').value.trim();
+      if (!date || !title) { showToast('Date and title are required.', 'error'); return; }
+
+      const saveBtn = form.querySelector('#manual-ev-save');
+      saveBtn.disabled = true;
+      saveBtn.textContent = 'Saving…';
+
+      try {
+        await saveEvent({ date, title, description: desc, memoryId: null, sourceType: 'manual' });
+        showToast('Event added!', 'success');
+        form.remove();
+        await renderEventsTimeline();
+      } catch (err) {
+        showToast(`Failed: ${err.message}`, 'error');
+        saveBtn.disabled = false;
+        saveBtn.textContent = '✓ Add to Timeline';
+      }
+    });
+
+    form.querySelector('#manual-ev-date').focus();
   });
 }
 
