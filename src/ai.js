@@ -32,10 +32,10 @@ export async function summarizeContent(text, apiKey) {
   return groqChat([{
     role: 'user',
     content:
-      `Summarize the following text in exactly 2 sentences. Be concise and focus on the main point.\n` +
+      `Summarize the following text in exactly 2 sentences. Be concise, preserve all emotional depth, and focus on the main point, relationships, and key topics (such as family, mother, conflicts, decisions).\n` +
       `Match the language of the source text (e.g., if the text is in Hebrew, write the summary in Hebrew; if in English, write it in English).\n\n` +
       `Text:\n"${text}"\n\nRespond with ONLY the 2-sentence summary in the matching language, no extra conversational text.`
-  }], apiKey, 250);
+  }], apiKey, 250, MODEL_MULTI);
 }
 
 /**

@@ -495,24 +495,9 @@ function setupImport() {
     refreshSubmitBtn();
   });
 
-  // Open Drive modal
-  $('import-drive-btn').addEventListener('click', async () => {
-    await handleOpenDriveModal();
-  });
-
   // Discard selected file
   $('discard-import').addEventListener('click', () => {
     discardSelectedImport();
-  });
-
-  // Close Drive modal
-  $('close-drive-btn').addEventListener('click', closeDriveModal);
-  $('drive-modal-backdrop').addEventListener('click', closeDriveModal);
-
-  // Search Drive files
-  $('drive-search-input').addEventListener('input', (e) => {
-    const query = e.target.value.toLowerCase();
-    filterDriveFilesList(query);
   });
 }
 
@@ -533,112 +518,7 @@ function discardSelectedImport() {
   refreshSubmitBtn();
 }
 
-function closeDriveModal() {
-  $('drive-modal').classList.add('hidden');
-}
 
-async function handleOpenDriveModal() {
-  $('drive-modal').classList.remove('hidden');
-  $('drive-loading-state').classList.remove('hidden');
-  $('drive-empty-state').classList.add('hidden');
-  $('drive-files-container').innerHTML = '';
-  $('drive-search-input').value = '';
-
-  try {
-    if (!importDriveToken) {
-      $('drive-loading-text').textContent = 'Authorizing Google Drive...';
-      importDriveToken = await getDriveAccessToken();
-    }
-
-    $('drive-loading-text').textContent = 'Fetching files from Google Drive...';
-    const files = await listDriveFiles(importDriveToken);
-    importDriveFiles = files;
-    
-    $('drive-loading-state').classList.add('hidden');
-    renderDriveFiles(files);
-  } catch (err) {
-    console.error('Google Drive access failed:', err);
-    showToast(`Google Drive access failed: ${err.message}`, 'error');
-    closeDriveModal();
-  }
-}
-
-function renderDriveFiles(files) {
-  const container = $('drive-files-container');
-  container.innerHTML = '';
-  
-  if (!files || files.length === 0) {
-    $('drive-empty-state').classList.remove('hidden');
-    return;
-  }
-  
-  $('drive-empty-state').classList.add('hidden');
-
-  files.forEach(file => {
-    const item = document.createElement('div');
-    item.className = 'drive-file-item';
-    
-    // Choose icon based on file type
-    let iconSvg = '';
-    if (file.mimeType.startsWith('text/')) {
-      iconSvg = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-file-text"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/></svg>';
-    } else if (file.mimeType.startsWith('audio/')) {
-      iconSvg = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-music"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>';
-    } else if (file.mimeType.startsWith('video/')) {
-      iconSvg = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-video"><path d="m22 8-6 4 6 4V8Z"/><rect width="14" height="12" x="2" y="6" rx="2" ry="2"/></svg>';
-    } else {
-      iconSvg = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-file"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/></svg>';
-    }
-    
-    const sizeText = file.size ? formatBytes(parseInt(file.size)) : 'Unknown size';
-
-    item.innerHTML = `
-      <div class="drive-file-info">
-        <div class="drive-file-icon">${iconSvg}</div>
-        <div class="drive-file-details">
-          <span class="drive-file-name" title="${file.name}">${file.name}</span>
-          <span class="drive-file-meta">${sizeText}</span>
-        </div>
-      </div>
-      <button class="btn btn-secondary drive-file-select-btn" data-file-id="${file.id}">Select</button>
-    `;
-    
-    // Select button handler
-    item.querySelector('.drive-file-select-btn').addEventListener('click', (e) => {
-      e.stopPropagation();
-      selectDriveFile(file);
-    });
-    
-    item.addEventListener('click', () => {
-      selectDriveFile(file);
-    });
-
-    container.appendChild(item);
-  });
-}
-
-function selectDriveFile(file) {
-  importFile = file;
-  importSource = 'drive';
-  
-  // Show preview card
-  $('import-filename').textContent = file.name;
-  $('import-filesource').textContent = 'Google Drive';
-  $('import-filesize').textContent = file.size ? formatBytes(parseInt(file.size)) : 'Unknown size';
-  $('import-preview').classList.remove('hidden');
-  
-  closeDriveModal();
-  refreshSubmitBtn();
-}
-
-function filterDriveFilesList(query) {
-  if (!query) {
-    renderDriveFiles(importDriveFiles);
-    return;
-  }
-  const filtered = importDriveFiles.filter(f => f.name.toLowerCase().includes(query));
-  renderDriveFiles(filtered);
-}
 
 // ── Submit ─────────────────────────────────────────────
 function setupSubmit() {
@@ -715,99 +595,178 @@ async function handleSubmit() {
         }
       }
 
-      // ── 2. Transcribe Audio/Video if needed ──
-      if (!isText && fileBlob) {
-        pText.textContent = 'Transcribing media with Groq Whisper...';
-        content = await transcribeAudio(fileBlob, apiKey);
-      }
-
-      if (!content.trim()) {
-        throw new Error('No content could be extracted or transcribed from the file.');
-      }
-
-      // ── 3. Generate Summary ──
-      pText.textContent = 'Summarizing content with Groq LLM...';
-      const summary = await summarizeContent(content, apiKey);
-
-      // ── 4. Save to Database ──
-      pText.textContent = 'Saving to database...';
       const type = isVideo ? 'video' : (isAudio ? 'audio' : 'text');
-      
-      const saved = await saveMemory({
-        content: content,
-        type: type,
-        source: importSource === 'drive' ? 'google-drive' : 'local-upload',
-        file_url: importSource === 'drive' ? importFile.webViewLink : null,
-        file_name: importFile.name,
-        summary: summary,
-        metadata: {
+      const timestamp = new Date().toISOString();
+
+      if (isText) {
+        // Text files are fast, do it synchronously
+        pText.textContent = 'Summarizing text content...';
+        const summary = await summarizeContent(content, apiKey);
+        
+        pText.textContent = 'Saving to database...';
+        const saved = await saveMemory({
+          content: content,
+          type: type,
           source: importSource === 'drive' ? 'google-drive' : 'local-upload',
-          file_name: importFile.name
-        }
-      });
-      const id = saved.id;
+          file_url: importSource === 'drive' ? importFile.webViewLink : null,
+          file_name: importFile.name,
+          summary: summary,
+          metadata: {
+            source: importSource === 'drive' ? 'google-drive' : 'local-upload',
+            file_name: importFile.name
+          }
+        });
+        const id = saved.id;
+        triggerEmbedding(id, content);
 
-      // ── 5. Trigger Server-side Embedding ──
-      triggerEmbedding(id, content);
+        const entry = {
+          id:           saved.id,
+          timestamp:    saved.created_at || timestamp,
+          type:         saved.type,
+          content:      saved.content,
+          summary:      saved.summary ?? null,
+          audioData:    (importSource === 'drive' ? importFile.webViewLink : null),
+          audioMimeType:fileBlob ? fileBlob.type : null,
+          duration:     null,
+          metadata:     saved.metadata ?? {},
+          embedding:    [],
+        };
+        entries.push(entry);
+        updateCountBadge();
+        renderTimeline();
+        setTimeout(() => highlightEntry(id), 120);
 
-      // ── 6. Handle Local File Upload in the background (non-blocking) ──
-      if (importSource === 'local' && !isText && fileBlob) {
-        const recordedBlob = fileBlob;
-        const fileName = `${id}-${importFile.name}`;
+        discardSelectedImport();
+        showToast('Text file imported successfully!', 'success');
+        extractAndSaveEvents(id, content, 'memory');
+      } else {
+        // Audio/Video files are slow. Save a placeholder immediately and process in background!
+        const importFileName = importFile.name;
+        const sourceLoc      = importSource;
+        const driveFileId    = importFile ? importFile.id : null;
+        const driveWebViewLink = importFile ? importFile.webViewLink : null;
+
+        // Create local object URL for immediate in-browser playback
+        const localAudioURL = fileBlob ? URL.createObjectURL(fileBlob) : null;
+
+        pText.textContent = 'Creating memory entry...';
+        const saved = await saveMemory({
+          content: "[Processing media... Transcription and summary will appear here shortly.]",
+          type: type,
+          source: sourceLoc === 'drive' ? 'google-drive' : 'local-upload',
+          file_url: sourceLoc === 'drive' ? driveWebViewLink : null,
+          file_name: importFileName,
+          summary: null,
+          metadata: {
+            source: sourceLoc === 'drive' ? 'google-drive' : 'local-upload',
+            file_name: importFileName
+          }
+        });
+        const id = saved.id;
+
+        // Render placeholder entry card with the local audio player immediately
+        const entry = {
+          id:           saved.id,
+          timestamp:    saved.created_at || timestamp,
+          type:         saved.type,
+          content:      saved.content,
+          summary:      null,
+          audioData:    localAudioURL || (sourceLoc === 'drive' ? driveWebViewLink : null),
+          audioMimeType:fileBlob ? fileBlob.type : null,
+          duration:     null,
+          metadata:     saved.metadata ?? {},
+          embedding:    [],
+        };
+        entries.push(entry);
+        updateCountBadge();
+        renderTimeline();
+        setTimeout(() => highlightEntry(id), 120);
+
+        discardSelectedImport();
+        showToast('Media processing started in the background.', 'info');
+
+        // Spawn async background processing flow
         (async () => {
           try {
-
-            const { path } = await uploadFile(recordedBlob, type, fileName);
-            await updateMemory({
-              id: id,
-              file_url: path,
-              file_type: recordedBlob.type,
-              metadata: {
-                source: 'local-upload',
-                file_name: importFile.name,
-                storage_path: path
-              }
-            });
-            const entryInList = entries.find(e => e.id === id);
-            if (entryInList) {
-              entryInList.audioData = path;
+            // Step 1: If local file, upload in background
+            let fileUrlPath = null;
+            if (sourceLoc === 'local' && fileBlob) {
+              const { path } = await uploadFile(fileBlob, type, `${id}-${importFileName}`);
+              fileUrlPath = path;
+              await updateMemory({
+                id: id,
+                file_url: path,
+                file_type: fileBlob.type,
+                metadata: {
+                  source: 'local-upload',
+                  file_name: importFileName,
+                  storage_path: path
+                }
+              });
+              const entryInList = entries.find(e => e.id === id);
+              if (entryInList) entryInList.audioData = path;
             }
 
+            // Step 2: Fetch Drive blob if needed (if ever enabled again)
+            let transcribeBlob = fileBlob;
+
+            if (!transcribeBlob) {
+              throw new Error('Failed to retrieve file binary blob.');
+            }
+
+            // Step 3: Run audio transcription via Groq Whisper API
+            const transcribedText = await transcribeAudio(transcribeBlob, apiKey);
+            if (!transcribedText.trim()) {
+              throw new Error('Transcription completed but returned empty text.');
+            }
+
+            // Update content in DB and local state
+            await updateMemory({ id: id, content: transcribedText });
+            const entryInList = entries.find(e => e.id === id);
+            if (entryInList) entryInList.content = transcribedText;
+            
+            const card = $(`entry-${id}`);
+            if (card) {
+              card.querySelector('.entry-content').textContent = transcribedText;
+            }
+
+            // Step 4: Run content summarization via Groq LLM API
+            const summaryText = await summarizeContent(transcribedText, apiKey);
+            await updateMemory({ id: id, summary: summaryText });
+            if (entryInList) entryInList.summary = summaryText;
+            
+            if (card) {
+              const sumBox = card.querySelector(`#sum-${id}`);
+              if (sumBox) {
+                sumBox.querySelector('.summary-text').textContent = summaryText;
+                sumBox.classList.remove('hidden');
+              }
+              // Hide summarize button now that summary exists
+              card.querySelector('.summarize-btn')?.classList.add('hidden');
+            }
+
+            // Step 5: Trigger embeddings generation and event extraction
+            triggerEmbedding(id, transcribedText);
+            const evSourceType = type === 'video' ? 'video' : 'audio';
+            extractAndSaveEvents(id, transcribedText, evSourceType);
+
+            showToast(`Processing complete: "${importFileName}"`, 'success');
+
           } catch (err) {
-            console.error('Asynchronous file upload failed:', err);
-            showToast('Failed to upload file to storage, but summary and transcript are saved.', 'error');
+            console.error('Background import processing failed:', err);
+            showToast(`Processing failed for "${importFileName}": ${err.message}`, 'error');
+            
+            const entryInList = entries.find(e => e.id === id);
+            if (entryInList) {
+              entryInList.content = `[Processing failed: ${err.message}]`;
+              const card = $(`entry-${id}`);
+              if (card) {
+                card.querySelector('.entry-content').textContent = entryInList.content;
+              }
+            }
           }
         })();
       }
-
-      // ── 7. Map to Local Entry and Render ──
-      const timestamp = new Date().toISOString();
-      const entry = {
-        id:           saved.id,
-        timestamp:    saved.created_at || timestamp,
-        type:         saved.type,
-        content:      saved.content,
-        summary:      saved.summary ?? null,
-        audioData:    (importSource === 'drive' ? importFile.webViewLink : null),
-        audioMimeType:fileBlob ? fileBlob.type : null,
-        duration:     null,
-        metadata:     saved.metadata ?? {},
-        embedding:    [],
-      };
-
-      entries.push(entry);
-      updateCountBadge();
-      renderTimeline();
-      setTimeout(() => highlightEntry(id), 120);
-
-      // ── 8. Reset state ──
-      discardSelectedImport();
-      showToast('File imported successfully!', 'success');
-
-      // ── 9. Extract Events (background) ──
-      // sourceType maps file type to event tag
-      const evSourceType = type === 'video' ? 'video' : type === 'audio' ? 'audio' : 'memory';
-      extractAndSaveEvents(id, content, evSourceType);
 
     } catch (err) {
       console.error('Import failed:', err);
@@ -1098,12 +1057,20 @@ function buildEntryCard(entry, displayIndex) {
 
 
   const hasSummary = !!entry.summary;
-  const summaryHTML = hasSummary
-    ? `<div class="summary-box" id="sum-${entry.id}">
-         <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-sparkles" style="color: var(--purple); flex-shrink: 0; margin-top: 2px;"><path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275Z"/><path d="m5 3 1 2.5L8.5 6 6 7 5 9.5 4 7 1.5 6 4 5Z"/><path d="m19 17 1 2.5 2.5.5-2.5 1-1 2.5-1-2.5-2.5-1 2.5-1Z"/></svg>
-         <span>${esc(entry.summary)}</span>
-       </div>`
-    : `<div class="summary-box hidden" id="sum-${entry.id}"></div>`;
+  const summaryHTML = `
+    <div class="summary-box ${hasSummary ? '' : 'hidden'}" id="sum-${entry.id}" style="margin-top: var(--s3); background: var(--surface-hover); border: 1px solid var(--border); border-radius: var(--r-sm); padding: var(--s3); font-size: 13px; color: var(--text-2); display: flex; flex-direction: column; gap: var(--s2);">
+      <div style="display: flex; gap: var(--s2); align-items: flex-start;">
+        <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-sparkles" style="color: var(--purple); flex-shrink: 0; margin-top: 2px;"><path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275Z"/><path d="m5 3 1 2.5L8.5 6 6 7 5 9.5 4 7 1.5 6 4 5Z"/><path d="m19 17 1 2.5 2.5.5-2.5 1-1 2.5-1-2.5-2.5-1 2.5-1Z"/></svg>
+        <span class="summary-text" style="flex: 1; line-height: 1.4;">${hasSummary ? esc(entry.summary) : ''}</span>
+      </div>
+      <div class="summary-actions-row" style="display: flex; gap: var(--s3); justify-content: flex-end; margin-top: var(--s1); border-top: 1px dashed var(--border); padding-top: var(--s2);">
+        <button class="btn-undo-summary" data-undo-id="${entry.id}" style="background: none; border: none; font-family: inherit; font-size: 11px; color: var(--text-3); cursor: pointer; display: inline-flex; align-items: center; gap: 4px; padding: 2px 4px;" title="Remove summary">
+          <svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-trash-2"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/></svg>
+          Undo
+        </button>
+      </div>
+    </div>
+  `;
 
   card.innerHTML = `
     <div class="entry-meta">
@@ -1120,11 +1087,9 @@ function buildEntryCard(entry, displayIndex) {
     </div>
     <p class="entry-content" dir="auto">${esc(entry.content)}</p>
     ${audioHTML}
-    ${hasSummary ? '' : `
-      <button class="summarize-btn" data-summarize-id="${entry.id}" aria-label="Summarize">
-        + Summary
-      </button>
-    `}
+    <button class="summarize-btn ${hasSummary ? 'hidden' : ''}" data-summarize-id="${entry.id}" aria-label="Summarize">
+      + Summary
+    </button>
     ${summaryHTML}
   `;
 
@@ -1321,6 +1286,15 @@ function setupEntryInteractions() {
     if (sumBtn) {
       e.stopPropagation();
       await handleSummarize(sumBtn);
+      return;
+    }
+
+    // Undo summary button
+    const undoBtn = e.target.closest('[data-undo-id]');
+    if (undoBtn) {
+      e.stopPropagation();
+      await handleUndoSummary(undoBtn);
+      return;
     }
 
     // Related item → scroll to entry
@@ -1416,6 +1390,34 @@ async function handleSummarize(btn) {
   }
 }
 
+async function handleUndoSummary(btn) {
+  const id = btn.dataset.undoId;
+  const entry = entries.find(e => e.id === id);
+  if (!entry) return;
+
+  btn.disabled = true;
+  try {
+    entry.summary = null;
+    await updateMemory({ id: entry.id, summary: null });
+
+    const card = $(`entry-${id}`);
+    if (card) {
+      card.querySelector(`#sum-${id}`).classList.add('hidden');
+      
+      const sumBtn = card.querySelector('.summarize-btn');
+      if (sumBtn) {
+        sumBtn.classList.remove('hidden');
+      }
+    }
+    showToast('Summary removed.', 'info');
+  } catch (err) {
+    showToast(`Undo failed: ${err.message}`, 'error');
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+
 // ── Event Extraction ───────────────────────────────────
 async function extractAndSaveEvents(memoryId, content, sourceType = 'memory') {
   const key = getGroqKey();
@@ -1453,8 +1455,22 @@ async function extractAndSaveEvents(memoryId, content, sourceType = 'memory') {
 async function renderEventsTimeline() {
   const container = $('events-container');
   const empty     = $('events-empty');
+  const loading   = $('events-loading');
 
-  const allEvents = await getAllEvents();
+  if (loading) loading.classList.remove('hidden');
+  container.classList.add('hidden');
+  empty.classList.add('hidden');
+
+  let allEvents = [];
+  try {
+    allEvents = await getAllEvents();
+  } catch (err) {
+    console.error('Failed to load life events:', err);
+    showToast('Failed to load life events.', 'error');
+  } finally {
+    if (loading) loading.classList.add('hidden');
+  }
+
   // Sort descending: most recent year/date first
   const sortedEvents = [...allEvents].sort((a, b) => b.date.localeCompare(a.date));
 
