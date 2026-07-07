@@ -795,7 +795,7 @@ async function handleSubmit() {
         embedding:    [],
       };
 
-      entries.unshift(entry);
+      entries.push(entry);
       updateCountBadge();
       renderTimeline();
       setTimeout(() => highlightEntry(id), 120);
@@ -864,7 +864,7 @@ async function handleSubmit() {
       embedding:    [],
     };
 
-    entries.unshift(entry);
+    entries.push(entry);
     updateCountBadge();
 
     // 5. Render immediately
