@@ -5,8 +5,9 @@
  */
 
 const GROQ_CHAT   = 'https://api.groq.com/openai/v1/chat/completions';
-const MODEL_FAST  = 'llama-3.1-8b-instant';       // fast, English-only tasks
-const MODEL_MULTI = 'llama-3.3-70b-versatile';    // multilingual, Hebrew support
+// Groq retired the Llama chat models; gpt-oss handles Hebrew well.
+const MODEL_FAST  = 'openai/gpt-oss-20b';         // fast, multilingual — summaries
+const MODEL_MULTI = 'openai/gpt-oss-120b';        // stronger — structured extraction
 
 async function groqChat(messages, apiKey, maxTokens = 600, model = MODEL_FAST) {
   const res = await fetch(GROQ_CHAT, {
@@ -15,7 +16,12 @@ async function groqChat(messages, apiKey, maxTokens = 600, model = MODEL_FAST) {
       Authorization: `Bearer ${apiKey}`,
       'Content-Type': 'application/json'
     },
-    body: JSON.stringify({ model, messages, temperature: 0.1, max_tokens: maxTokens })
+    // gpt-oss are reasoning models: reasoning tokens count toward max_tokens,
+    // so keep effort low and don't return the reasoning text.
+    body: JSON.stringify({
+      model, messages, temperature: 0.1, max_tokens: maxTokens,
+      reasoning_effort: 'low', include_reasoning: false
+    })
   });
 
 
@@ -35,7 +41,7 @@ export async function summarizeContent(text, apiKey) {
       `Summarize the following text in exactly 2 sentences. Be concise, preserve all emotional depth, and focus on the main point, relationships, and key topics (such as family, mother, conflicts, decisions).\n` +
       `Match the language of the source text (e.g., if the text is in Hebrew, write the summary in Hebrew; if in English, write it in English).\n\n` +
       `Text:\n"${text}"\n\nRespond with ONLY the 2-sentence summary in the matching language, no extra conversational text.`
-  }], apiKey, 250, MODEL_MULTI);
+  }], apiKey, 600, MODEL_FAST);
 }
 
 /**

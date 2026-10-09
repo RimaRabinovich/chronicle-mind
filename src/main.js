@@ -1367,13 +1367,7 @@ async function handleSummarize(btn) {
   const id      = btn.dataset.summarizeId;
   const sumBox  = $(`sum-${id}`);
   const entry   = entries.find(e => e.id === id);
-  if (!entry) return;
-
-  // Toggle if already has summary
-  if (entry.summary) {
-    sumBox.classList.toggle('hidden');
-    return;
-  }
+  if (!entry || !sumBox) return;
 
   // Show spinner
   btn.innerHTML = '<span class="sum-spinner"></span> Summarizing…';
@@ -1383,18 +1377,17 @@ async function handleSummarize(btn) {
     const summary = await summarizeContent(entry.content, getGroqKey());
 
     // Persist summary update to Supabase
-    entry.summary = summary;
     await updateMemory({ id: entry.id, summary });
+    entry.summary = summary;
 
-    // Update UI
-    sumBox.textContent = summary;
+    // Update UI — fill the inner span so the undo button is preserved
+    sumBox.querySelector('.summary-text').textContent = summary;
     sumBox.classList.remove('hidden');
-    btn.innerHTML  = '✦ Summary';
-    btn.classList.add('has-summary');
+    btn.classList.add('hidden');
   } catch (err) {
     showToast(`Summarize failed: ${err.message}`, 'error');
-    btn.innerHTML = '✦ Summarize';
   } finally {
+    btn.innerHTML = '+ Summary';
     btn.disabled = false;
   }
 }
