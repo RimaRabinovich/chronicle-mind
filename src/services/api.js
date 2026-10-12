@@ -12,36 +12,22 @@ import { currentUser } from '../auth.js';
 
 const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
 
-/**
- * Call a Supabase Edge Function.
- * @param {string} fnName   - Edge Function name (e.g. 'memories')
- * @param {object} options  - fetch options (method, body, params)
- */
-export async function callEdgeFn(fnName, { method = 'GET', body, params } = {}) {
+async function authHeaders() {
   const user = currentUser();
   if (!user) throw new Error('Not authenticated');
 
   // Get fresh Firebase ID token (auto-refreshes if needed)
   const token = await user.getIdToken();
 
-  let url = edgeFnUrl(fnName);
-  if (params) {
-    const qs = new URLSearchParams(params).toString();
-    url = `${url}?${qs}`;
-  }
+  return {
+    // Supabase gateway requires its own anon key
+    'apikey': SUPABASE_ANON_KEY,
+    // Our Edge Function reads this to verify the Firebase user
+    'Authorization': `Bearer ${token}`,
+  };
+}
 
-  const res = await fetch(url, {
-    method,
-    headers: {
-      // Supabase gateway requires its own anon key
-      'apikey': SUPABASE_ANON_KEY,
-      // Our Edge Function reads this to verify the Firebase user
-      'Authorization': `Bearer ${token}`,
-      'Content-Type': 'application/json',
-    },
-    body: body ? JSON.stringify(body) : undefined,
-  });
-
+async function parseResponse(res) {
   let data = null;
   try {
     data = await res.json();
@@ -63,4 +49,41 @@ export async function callEdgeFn(fnName, { method = 'GET', body, params } = {}) 
   }
 
   return data ?? {};
+}
+
+/**
+ * Call a Supabase Edge Function.
+ * @param {string} fnName   - Edge Function name (e.g. 'memories')
+ * @param {object} options  - fetch options (method, body, params)
+ */
+export async function callEdgeFn(fnName, { method = 'GET', body, params } = {}) {
+  let url = edgeFnUrl(fnName);
+  if (params) {
+    const qs = new URLSearchParams(params).toString();
+    url = `${url}?${qs}`;
+  }
+
+  const res = await fetch(url, {
+    method,
+    headers: { ...(await authHeaders()), 'Content-Type': 'application/json' },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+
+  return parseResponse(res);
+}
+
+/**
+ * POST multipart form data (e.g. audio files) to a Supabase Edge Function.
+ * The browser sets the multipart Content-Type boundary itself.
+ * @param {string} fnName     - Edge Function name, may include a subpath
+ * @param {FormData} formData
+ */
+export async function callEdgeFnForm(fnName, formData) {
+  const res = await fetch(edgeFnUrl(fnName), {
+    method: 'POST',
+    headers: await authHeaders(),
+    body: formData,
+  });
+
+  return parseResponse(res);
 }

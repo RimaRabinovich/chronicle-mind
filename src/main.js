@@ -268,11 +268,6 @@ async function loadMemories() {
 // Legacy migration helper removed (no longer offered)
 
 
-/** Returns the Groq API key from .env only */
-function getGroqKey() {
-  return import.meta.env.VITE_GROQ_API_KEY?.trim() || '';
-}
-
 
 
 // ── View Tabs (Memories / Life Events) ─────────────────
@@ -437,17 +432,9 @@ async function stopRecording() {
 
   audioBlob = await recorder.stop();
 
-  const key = getGroqKey();
-  if (!key) {
-    showToast('Add a Groq API key in ⚙️ Settings to transcribe audio.', 'error');
-    $('transcript-preview').classList.remove('hidden');
-    $('transcript-text').textContent = '[No API key — use the Type tab for text input]';
-    return;
-  }
-
   $('transcribing-indicator').classList.remove('hidden');
   try {
-    const text = await transcribeAudio(audioBlob, key);
+    const text = await transcribeAudio(audioBlob);
     currentTranscript = text;
     $('transcript-text').textContent = text;
     $('transcript-preview').classList.remove('hidden');
@@ -545,14 +532,6 @@ async function handleSubmit() {
   label.textContent = 'Saving…';
 
   if (currentMode === 'import') {
-    const apiKey = getGroqKey();
-    if (!apiKey) {
-      showToast('Add a Groq API key in ⚙️ Settings to process imported files.', 'error');
-      btn.disabled = false;
-      label.textContent = 'Save memory';
-      return;
-    }
-
     const pIndicator = $('import-processing-indicator');
     const pText = $('import-processing-text');
     pIndicator.classList.remove('hidden');
@@ -601,7 +580,7 @@ async function handleSubmit() {
       if (isText) {
         // Text files are fast, do it synchronously
         pText.textContent = 'Summarizing text content...';
-        const summary = await summarizeContent(content, apiKey);
+        const summary = await summarizeContent(content);
         
         pText.textContent = 'Saving to database...';
         const saved = await saveMemory({
@@ -721,7 +700,7 @@ async function handleSubmit() {
             }
 
             // Step 3: Run audio transcription via Groq Whisper API
-            const transcribedText = await transcribeAudio(transcribeBlob, apiKey);
+            const transcribedText = await transcribeAudio(transcribeBlob);
             if (!transcribedText.trim()) {
               throw new Error('Transcription completed but returned empty text.');
             }
@@ -737,7 +716,7 @@ async function handleSubmit() {
             }
 
             // Step 4: Run content summarization via Groq LLM API
-            const summaryText = await summarizeContent(transcribedText, apiKey);
+            const summaryText = await summarizeContent(transcribedText);
             await updateMemory({ id: id, summary: summaryText });
             if (entryInList) entryInList.summary = summaryText;
             
@@ -1374,7 +1353,7 @@ async function handleSummarize(btn) {
   btn.disabled = true;
 
   try {
-    const summary = await summarizeContent(entry.content, getGroqKey());
+    const summary = await summarizeContent(entry.content);
 
     // Persist summary update to Supabase
     await updateMemory({ id: entry.id, summary });
@@ -1422,12 +1401,8 @@ async function handleUndoSummary(btn) {
 
 // ── Event Extraction ───────────────────────────────────
 async function extractAndSaveEvents(memoryId, content, sourceType = 'memory') {
-  const key = getGroqKey();
-  if (!key) return;
-
-
   try {
-    const events = await extractEvents(content, key);
+    const events = await extractEvents(content);
 
     let foundNew = false;
     for (const ev of events) {

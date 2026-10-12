@@ -4,44 +4,35 @@
  *  - extractEvents: pull dated life events from free-form text
  */
 
-const GROQ_CHAT   = 'https://api.groq.com/openai/v1/chat/completions';
+import { callEdgeFn } from './services/api.js';
+
 // Groq retired the Llama chat models; gpt-oss handles Hebrew well.
 const MODEL_FAST  = 'openai/gpt-oss-20b';         // fast, multilingual — summaries
 const MODEL_MULTI = 'openai/gpt-oss-120b';        // stronger — structured extraction
 
-async function groqChat(messages, apiKey, maxTokens = 600, model = MODEL_FAST) {
-  const res = await fetch(GROQ_CHAT, {
+// Goes through the ai-proxy Edge Function, which holds the Groq key.
+async function groqChat(messages, maxTokens = 600, model = MODEL_FAST) {
+  const data = await callEdgeFn('ai-proxy/chat', {
     method: 'POST',
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      'Content-Type': 'application/json'
-    },
     // gpt-oss are reasoning models: reasoning tokens count toward max_tokens,
     // so keep effort low and don't return the reasoning text.
-    body: JSON.stringify({
+    body: {
       model, messages, temperature: 0.1, max_tokens: maxTokens,
       reasoning_effort: 'low', include_reasoning: false
-    })
+    }
   });
 
-
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err?.error?.message || `Groq error ${res.status}`);
-  }
-
-  return (await res.json()).choices[0].message.content.trim();
+  return data.choices[0].message.content.trim();
 }
 
-export async function summarizeContent(text, apiKey) {
-  if (!apiKey) throw new Error('No Groq API key — add VITE_GROQ_API_KEY to .env');
+export async function summarizeContent(text) {
   return groqChat([{
     role: 'user',
     content:
       `Summarize the following text in exactly 2 sentences. Be concise, preserve all emotional depth, and focus on the main point, relationships, and key topics (such as family, mother, conflicts, decisions).\n` +
       `Match the language of the source text (e.g., if the text is in Hebrew, write the summary in Hebrew; if in English, write it in English).\n\n` +
       `Text:\n"${text}"\n\nRespond with ONLY the 2-sentence summary in the matching language, no extra conversational text.`
-  }], apiKey, 600, MODEL_FAST);
+  }], 600, MODEL_FAST);
 }
 
 /**
@@ -71,11 +62,9 @@ function salvageEvents(raw) {
  * Supports timeline-format text (years as headers), Hebrew text,
  * and gracefully handles truncated LLM responses.
  * @param {string} text
- * @param {string} apiKey
  * @returns {Promise<Array<{date:string, title:string, description:string}>>}
  */
-export async function extractEvents(text, apiKey) {
-  if (!apiKey) return [];
+export async function extractEvents(text) {
   const today = new Date().toISOString().slice(0, 10);
 
   let raw;
@@ -94,7 +83,7 @@ export async function extractEvents(text, apiKey) {
         `4. Write Hebrew text as-is with actual Hebrew characters (NOT \\uXXXX escapes).\n` +
         `5. If nothing found, return: []\n\n` +
         `Text:\n${text}`
-    }], apiKey, 4096, MODEL_MULTI);
+    }], 4096, MODEL_MULTI);
 
 
 
