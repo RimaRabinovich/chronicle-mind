@@ -346,12 +346,32 @@ function switchTab(mode) {
 }
 
 
+// ── Transcription language (shared by Record + Import) ──
+const LANG_KEY = 'transcribeLang';
+
+function getTranscribeLang() {
+  try { return localStorage.getItem(LANG_KEY) || ''; } catch { return ''; }
+}
+
+function setupLangPickers() {
+  const selects = document.querySelectorAll('.transcribe-lang');
+  const current = getTranscribeLang();
+  selects.forEach(sel => {
+    sel.value = current;
+    sel.addEventListener('change', () => {
+      try { localStorage.setItem(LANG_KEY, sel.value); } catch {}
+      selects.forEach(other => { other.value = sel.value; });
+    });
+  });
+}
+
 // ── Recorder ───────────────────────────────────────────
 function setupRecorder() {
   if (recorderRegistered) return;
   recorderRegistered = true;
 
   $('record-btn').addEventListener('click', toggleRecording);
+  setupLangPickers();
 
 
   // Edit transcript
@@ -434,7 +454,7 @@ async function stopRecording() {
 
   $('transcribing-indicator').classList.remove('hidden');
   try {
-    const text = await transcribeAudio(audioBlob);
+    const text = await transcribeAudio(audioBlob, getTranscribeLang());
     currentTranscript = text;
     $('transcript-text').textContent = text;
     $('transcript-preview').classList.remove('hidden');
@@ -700,7 +720,7 @@ async function handleSubmit() {
             }
 
             // Step 3: Run audio transcription via Groq Whisper API
-            const transcribedText = await transcribeAudio(transcribeBlob);
+            const transcribedText = await transcribeAudio(transcribeBlob, getTranscribeLang());
             if (!transcribedText.trim()) {
               throw new Error('Transcription completed but returned empty text.');
             }
