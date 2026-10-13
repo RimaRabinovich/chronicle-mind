@@ -26,7 +26,10 @@ export async function uploadFile(file, type, name) {
 
   const token = await user.getIdToken();
   const ts    = Date.now();
-  const path  = `${user.uid}/${type}/${ts}-${name}`;
+  // The path travels in an HTTP header (Latin-1 only), and storage keys reject many
+  // characters, so keep it ASCII; the real name is kept in the memory's metadata.
+  const safeName = name.normalize('NFKD').replace(/[^\w.-]+/g, '_').replace(/_+/g, '_');
+  const path  = `${user.uid}/${type}/${ts}-${safeName}`;
 
   const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
   const anonKey     = import.meta.env.VITE_SUPABASE_ANON_KEY;

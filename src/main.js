@@ -16,12 +16,13 @@ import './style.css';
 import { saveMemory, getAllMemories, deleteMemory, updateMemory, deleteAllUserMemories } from './services/memories.js';
 import { saveEvent, updateEvent, deleteEvent, getAllEvents, deleteEventsByMemoryId, deleteAllUserEvents } from './services/events.js';
 import { triggerEmbedding } from './services/rag.js';
-import { uploadFile, deleteUserFolder } from './services/storage.js';
+import { uploadFile, deleteFile, deleteUserFolder } from './services/storage.js';
 
 
 // ── Other utilities ───────────────────────────────────────────────────
 import { transcribeAudio }           from './transcription.js';
 import { prepareAudio, transcribeChunks, MAX_DIRECT_BYTES } from './media/transcribePipeline.js';
+import { saveJob, getJob, updateJob, getAllJobs, deleteJob, clearJobs, withJobLock } from './media/jobStore.js';
 import { AudioRecorder }             from './recorder.js';
 
 import { summarizeContent, extractEvents } from './ai.js';
@@ -72,6 +73,7 @@ async function init() {
   try {
     await loadMemories();
     renderTimeline();
+    resumeMediaJobs();
     setupViewTabs();
     setupTabs();
     setupRecorder();
@@ -173,7 +175,10 @@ function bootAuth() {
       // 3. Delete all audio files from private Supabase Storage
       await deleteUserFolder(uid);
 
-      // 4. Force Sign out user
+      // 4. Drop unfinished media imports stored in this browser
+      await clearJobs().catch(() => {});
+
+      // 5. Force Sign out user
       await signOutUser();
 
       showToast('Account data deleted successfully.', 'success');
@@ -715,131 +720,18 @@ async function handleSubmit() {
         discardSelectedImport();
         showToast('Media processing started in the background.', 'info');
 
-        // Spawn async background processing flow
-        const lang = getTranscribeLang();
-        (async () => {
-          // Progress goes into the card's placeholder text (not saved to the DB).
-          const setStatus = (text) => {
-            const el = $(`entry-${id}`)?.querySelector('.entry-content');
-            if (el) el.textContent = `[${text}]`;
-          };
-
-          try {
-            if (!fileBlob) {
-              throw new Error('Failed to retrieve file binary blob.');
-            }
-
-            // Step 1: Compress to mono 16 kHz Opus and split into ~10-minute chunks
-            const { audio, chunks, duration, createdAt } = await prepareAudio(fileBlob, {
-              durationSec: mediaDuration,
-              onProgress: (stage, ratio) => setStatus(stage === 'loading'
-                ? 'Loading audio tools…'
-                : `Compressing audio… ${Math.round(ratio * 100)}%`),
-            });
-
-            // Step 2: Upload only the compressed audio, in parallel with transcription.
-            // The original file stays on the user's device.
-            const uploadBlob = audio || fileBlob;
-            const uploadName = audio
-              ? `${id}-${importFileName.replace(/\.[^.]+$/, '')}.webm`
-              : `${id}-${importFileName}`;
-            const uploadPromise = sourceLoc === 'local'
-              ? uploadFile(uploadBlob, type, uploadName).catch(err => {
-                  console.error('Audio upload failed:', err);
-                  showToast(`Couldn't store audio for "${importFileName}"; transcript will still be saved.`, 'error');
-                  return null;
-                })
-              : Promise.resolve(null);
-
-            // Step 3: Transcribe each chunk via Groq Whisper and stitch the timestamps
-            const { text: transcribedText, segments } = await transcribeChunks(chunks, {
-              language: lang,
-              onProgress: (done, total) => {
-                if (done < total) {
-                  setStatus(total > 1 ? `Transcribing part ${done + 1} of ${total}…` : 'Transcribing…');
-                }
-              },
-            });
-            if (!transcribedText.trim()) {
-              throw new Error('Transcription completed but returned empty text.');
-            }
-
-            const uploaded = await uploadPromise;
-            const finalDuration = mediaDuration ?? (duration ? Math.round(duration) : null);
-            const updates = {
-              id,
-              content: transcribedText,
-              duration_sec: finalDuration,
-              metadata: {
-                source: sourceLoc === 'drive' ? 'google-drive' : 'local-upload',
-                file_name: importFileName,
-                // The recording date embedded in the media beats the file's modified date.
-                captured_at: createdAt || fileDate || undefined,
-                transcript_segments: segments,
-              },
-            };
-            if (uploaded) {
-              updates.file_url = uploaded.path;
-              updates.file_type = uploadBlob.type;
-              updates.metadata.storage_path = uploaded.path;
-            }
-
-            // Update content in DB and local state
-            await updateMemory(updates);
-            const entryInList = entries.find(e => e.id === id);
-            if (entryInList) {
-              entryInList.content = transcribedText;
-              entryInList.duration = finalDuration;
-              entryInList.metadata = updates.metadata;
-              if (uploaded) entryInList.audioData = uploaded.path;
-              if (createdAt && createdAt !== entryInList.timestamp) {
-                entryInList.timestamp = createdAt;
-                sortEntries();
-                renderTimeline();
-              }
-            }
-
-            const card = $(`entry-${id}`);
-            if (card) {
-              card.querySelector('.entry-content').textContent = transcribedText;
-            }
-
-            // Step 4: Run content summarization via Groq LLM API
-            const summaryText = await summarizeContent(transcribedText);
-            await updateMemory({ id: id, summary: summaryText });
-            if (entryInList) entryInList.summary = summaryText;
-            
-            if (card) {
-              const sumBox = card.querySelector(`#sum-${id}`);
-              if (sumBox) {
-                sumBox.querySelector('.summary-text').textContent = summaryText;
-                sumBox.classList.remove('hidden');
-              }
-              // Hide summarize button now that summary exists
-              card.querySelector('.summarize-btn')?.classList.add('hidden');
-            }
-
-            // Step 5: Trigger embeddings generation and event extraction
-            triggerEmbedding(id, transcribedText);
-            const evSourceType = type === 'video' ? 'video' : 'audio';
-            extractAndSaveEvents(id, transcribedText, evSourceType);
-
-            showToast(`Processing complete: "${importFileName}"`, 'success');
-
-          } catch (err) {
-            console.error('Background import processing failed:', err);
-            showToast(`Processing failed for "${importFileName}": ${err.message}`, 'error');
-            
-            const entryInList = entries.find(e => e.id === id);
-            if (entryInList) {
-              entryInList.content = `[Processing failed: ${err.message}]`;
-              const card = $(`entry-${id}`);
-              if (card) {
-                card.querySelector('.entry-content').textContent = entryInList.content;
-              }
-            }
-          }
-        })();
+        // Process in the background. The job record lets a page refresh resume it
+        // once compression is done (see resumeMediaJobs).
+        const job = await saveJob({
+          id,
+          type,
+          sourceLoc,
+          fileName:      importFileName,
+          fileDate,
+          lang:          getTranscribeLang(),
+          mediaDuration,
+        });
+        queueMediaJob(job, fileBlob);
       }
 
     } catch (err) {
@@ -1394,6 +1286,7 @@ function highlightEntry(id) {
 }
 
 async function handleDeleteEntry(id) {
+  await cancelMediaJob(id);   // stop any unfinished media import first
   const card = $(`entry-${id}`);
   if (card) {
     card.style.transition = 'opacity 0.2s, transform 0.2s';
@@ -1490,6 +1383,258 @@ async function handleUndoSummary(btn) {
 
 
 // ── Event Extraction ───────────────────────────────────
+// ── Media import jobs ──────────────────────────────────
+// Imports run one at a time in this tab, so they don't compete for Groq's
+// rate limits. Each has an AbortController so deleting the memory stops it.
+let mediaQueue = Promise.resolve();
+const jobControllers = new Map();   // memory id → AbortController
+
+/** Show progress in a media card's placeholder text (not saved to the DB). */
+function setJobStatus(id, text) {
+  const el = $(`entry-${id}`)?.querySelector('.entry-content');
+  if (el) el.textContent = `[${text}]`;
+}
+
+/** Add an import to the queue. `fileBlob` is the original file, if still in hand. */
+function queueMediaJob(job, fileBlob = null) {
+  const controller = new AbortController();
+  if (jobControllers.size > 0) setJobStatus(job.id, 'Waiting for the previous import to finish…');
+  jobControllers.set(job.id, controller);
+
+  mediaQueue = mediaQueue
+    .then(() => withJobLock(job.id, () => runMediaJob(job, fileBlob, controller.signal)))
+    .catch(err => console.error('Media job failed:', err))
+    .finally(() => jobControllers.delete(job.id));
+}
+
+/**
+ * Stop an import whose memory is being deleted, forget its saved progress, and
+ * remove audio it already uploaded (the card may still be playing a local copy).
+ */
+async function cancelMediaJob(id) {
+  jobControllers.get(id)?.abort(new DOMException('Import cancelled', 'AbortError'));
+  const job = await getJob(id).catch(() => null);
+  if (!job) return;
+  await deleteJob(id).catch(() => {});
+  if (job.uploadedPath) {
+    await deleteFile(job.uploadedPath).catch(err => console.warn('Failed to delete file from bucket:', err));
+  }
+}
+
+/**
+ * Compress → upload → transcribe → summarize one imported media file, saving
+ * progress to the job store after each step so a refresh can pick it up again.
+ * @param {object} job          record from media/jobStore.js
+ * @param {Blob} [fileBlob]     the original file; only needed if not yet compressed
+ * @param {AbortSignal} signal  aborted when the memory is deleted
+ */
+async function runMediaJob(job, fileBlob, signal) {
+  const { id, type, fileName } = job;
+  const setStatus = (text) => setJobStatus(id, text);
+
+  try {
+    signal.throwIfAborted();
+
+    // Interrupted while compressing on an earlier page load: the original file is
+    // gone, so remove the placeholder (nothing was uploaded yet) and ask for a re-import.
+    if (!fileBlob && !job.chunks && job.transcript == null) {
+      await deleteJob(id);
+      await deleteMemory(id).catch(err => console.error('Failed to remove interrupted import:', err));
+      entries = entries.filter(e => e.id !== id);
+      updateCountBadge();
+      renderTimeline();
+      showToast(`"${fileName}" was interrupted while being prepared. Please import it again.`, 'error');
+      return;
+    }
+
+    // Step 1: Compress to mono 16 kHz Opus and split into ~10-minute chunks
+    if (!job.chunks && job.transcript == null) {
+      const { audio, chunks, duration, createdAt } = await prepareAudio(fileBlob, {
+        durationSec: job.mediaDuration,
+        onProgress: (stage, ratio) => setStatus(stage === 'loading'
+          ? 'Loading audio tools…'
+          : `Compressing audio… ${Math.round(ratio * 100)}%`),
+      });
+      signal.throwIfAborted();
+      job = await updateJob(id, { audio, chunks, duration, createdAt, results: [] });
+    }
+
+    if (job.transcript == null) {
+      // Step 2: Upload only the compressed audio, in parallel with transcription.
+      // The original file stays on the user's device. (Without compression, the
+      // single chunk is the original file.) The path is saved to the memory right
+      // away so the player works even if a later step is interrupted.
+      const uploadBlob = job.audio || job.chunks[0].blob;
+      const uploadName = job.audio
+        ? `${id}-${fileName.replace(/\.[^.]+$/, '')}.webm`
+        : `${id}-${fileName}`;
+      const uploadPromise = job.sourceLoc === 'local' && job.uploadedPath === undefined
+        ? uploadFile(uploadBlob, type, uploadName)
+            .then(async ({ path }) => {
+              try {
+                signal.throwIfAborted();
+                await updateMemory({ id, file_url: path, file_type: uploadBlob.type });
+                await updateJob(id, { uploadedPath: path });
+                return path;
+              } catch (err) {
+                if (!signal.aborted) throw err;
+                // Cancelled around the upload: don't leave the file behind.
+                await deleteFile(path).catch(() => {});
+                return null;
+              }
+            })
+            .catch(err => {
+              if (signal.aborted) return null;
+              console.error('Audio upload failed:', err);
+              showToast(`Couldn't store audio for "${fileName}"; transcript will still be saved.`, 'error');
+              return updateJob(id, { uploadedPath: null }).then(() => null, () => null);
+            })
+        : Promise.resolve(job.uploadedPath ?? null);
+
+      // Step 3: Transcribe each chunk via Groq Whisper and stitch the timestamps
+      const { text: transcribedText, segments } = await transcribeChunks(job.chunks, {
+        language: job.lang,
+        done: job.results,
+        signal,
+        onChunkDone: (results) => updateJob(id, { results }),
+        onProgress: (done, total) => {
+          if (done < total) {
+            setStatus(total > 1 ? `Transcribing part ${done + 1} of ${total}…` : 'Transcribing…');
+          }
+        },
+        onWait: (ms, part, total) => {
+          const until = new Date(Date.now() + ms).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+          setStatus(`Groq's free audio limit reached. Part ${part} of ${total} continues at about ${until}…`);
+        },
+      });
+      if (!transcribedText.trim()) {
+        throw new Error('Transcription completed but returned empty text.');
+      }
+
+      const uploadedPath = await uploadPromise;
+      signal.throwIfAborted();
+      const finalDuration = job.mediaDuration ?? (job.duration ? Math.round(job.duration) : null);
+      const updates = {
+        id,
+        content: transcribedText,
+        duration_sec: finalDuration,
+        metadata: {
+          source: job.sourceLoc === 'drive' ? 'google-drive' : 'local-upload',
+          file_name: fileName,
+          // The recording date embedded in the media beats the file's modified date.
+          captured_at: job.createdAt || job.fileDate || undefined,
+          transcript_segments: segments,
+        },
+      };
+      if (uploadedPath) {
+        updates.file_url = uploadedPath;
+        updates.file_type = uploadBlob.type;
+        updates.metadata.storage_path = uploadedPath;
+      }
+
+      // Update content in DB and local state
+      await updateMemory(updates);
+      // The transcript is saved, so the audio chunks are no longer needed.
+      job = await updateJob(id, { transcript: transcribedText, audio: null, chunks: null, results: null });
+
+      const entryInList = entries.find(e => e.id === id);
+      if (entryInList) {
+        entryInList.content = transcribedText;
+        entryInList.duration = finalDuration;
+        entryInList.metadata = updates.metadata;
+        if (uploadedPath && !entryInList.audioData) entryInList.audioData = uploadedPath;
+        if (job.createdAt && job.createdAt !== entryInList.timestamp) {
+          entryInList.timestamp = job.createdAt;
+          sortEntries();
+          renderTimeline();
+        }
+      }
+      const card = $(`entry-${id}`);
+      if (card) card.querySelector('.entry-content').textContent = transcribedText;
+    }
+
+    // Step 4: Run content summarization via Groq LLM API
+    signal.throwIfAborted();
+    const transcribedText = job.transcript;
+    const summaryText = await summarizeContent(transcribedText);
+    signal.throwIfAborted();
+    await updateMemory({ id, summary: summaryText });
+    await deleteJob(id);
+    const entryInList = entries.find(e => e.id === id);
+    if (entryInList) entryInList.summary = summaryText;
+
+    const card = $(`entry-${id}`);
+    if (card) {
+      const sumBox = card.querySelector(`#sum-${id}`);
+      if (sumBox) {
+        sumBox.querySelector('.summary-text').textContent = summaryText;
+        sumBox.classList.remove('hidden');
+      }
+      // Hide summarize button now that summary exists
+      card.querySelector('.summarize-btn')?.classList.add('hidden');
+    }
+
+    // Step 5: Trigger embeddings generation and event extraction
+    triggerEmbedding(id, transcribedText);
+    extractAndSaveEvents(id, transcribedText, type === 'video' ? 'video' : 'audio');
+
+    showToast(`Processing complete: "${fileName}"`, 'success');
+
+  } catch (err) {
+    if (signal.aborted) return;   // the memory was deleted; cancelMediaJob cleaned up
+    console.error('Background import processing failed:', err);
+    // Keep the job (if compression finished) so the next page load retries it.
+    const canRetry = !!(job.chunks || job.transcript != null);
+    showToast(`Processing failed for "${fileName}": ${err.message}`, 'error');
+
+    const entryInList = entries.find(e => e.id === id);
+    if (entryInList) {
+      entryInList.content = `[Processing failed: ${err.message}${canRetry ? ' Refresh the page to retry.' : ''}]`;
+      const card = $(`entry-${id}`);
+      if (card) card.querySelector('.entry-content').textContent = entryInList.content;
+    }
+    if (!canRetry) await deleteJob(id).catch(() => {});
+  }
+}
+
+/**
+ * On load, queue the media imports a previous page session left unfinished.
+ * While a job still has its compressed audio, the card plays that local copy.
+ */
+async function resumeMediaJobs() {
+  let jobs;
+  try {
+    jobs = await getAllJobs();
+  } catch (err) {
+    console.error('Could not read unfinished media jobs:', err);
+    return;
+  }
+
+  let rerender = false;
+  for (const job of jobs) {
+    const entry = entries.find(e => e.id === job.id);
+    // The memory was deleted (maybe on another device): drop the job.
+    if (!entry) {
+      await deleteJob(job.id).catch(() => {});
+      continue;
+    }
+    const localAudio = job.audio || job.chunks?.[0]?.blob;
+    if (!entry.audioData && localAudio) {
+      entry.audioData = URL.createObjectURL(localAudio);
+      entry.audioMimeType = localAudio.type;
+      rerender = true;
+    }
+  }
+  if (rerender) renderTimeline();
+
+  for (const job of jobs) {
+    if (!entries.some(e => e.id === job.id)) continue;
+    setJobStatus(job.id, 'Resuming…');
+    queueMediaJob(job);
+  }
+}
+
+
 async function extractAndSaveEvents(memoryId, content, sourceType = 'memory') {
   try {
     const events = await extractEvents(content);

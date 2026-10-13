@@ -7,7 +7,10 @@
  * Falls back to a simple hash-based mock if Groq embedding is unavailable.
  *
  * Also handles chunking + storing embeddings for a memory:
- * POST { memory_id: string, content: string } → { ok: true, chunks: number }
+ * POST { memory_id: string, content: string, chunk_offset?: number } → { ok: true, chunks: number }
+ * Long content is sent in batches: chunk_offset 0 replaces the memory's chunks,
+ * later batches append from chunk_offset. Chunks are embedded one at a time,
+ * since running them all in parallel exhausts the function's compute (546).
  */
 
 import { verifyFirebaseToken } from '../_shared/firebase-verify.ts';
@@ -78,29 +81,34 @@ Deno.serve(async (req: Request) => {
     if (body.memory_id && body.content) {
       const db     = getServiceClient();
       const chunks = chunkText(body.content);
+      const offset = Number(body.chunk_offset) || 0;
 
-      // Delete any existing chunks for this memory
-      await db.from('memory_chunks').delete().eq('memory_id', body.memory_id);
+      // The first batch replaces any existing chunks for this memory
+      if (offset === 0) {
+        await db.from('memory_chunks').delete().eq('memory_id', body.memory_id).eq('user_id', uid);
+      }
 
-      const rows = await Promise.all(
-        chunks.map(async (chunk, idx) => ({
+      const rows = [];
+      for (const [idx, chunk] of chunks.entries()) {
+        rows.push({
           memory_id:   body.memory_id,
           user_id:     uid,
-          chunk_index: idx,
+          chunk_index: offset + idx,
           content:     chunk,
           embedding:   `[${(await embedText(chunk)).join(',')}]`,
-        })),
-      );
+        });
+      }
 
       const { error } = await db.from('memory_chunks').insert(rows);
       if (error) throw error;
 
-      // Also store the top-level embedding on the memory row itself
-      const topEmbedding = await embedText(body.content.slice(0, 800));
-      await db.from('memories')
-        .update({ embedding: `[${topEmbedding.join(',')}]` })
-        .eq('id', body.memory_id)
-        .eq('user_id', uid);
+      // Also store the top-level embedding on the memory row itself (first batch only)
+      if (offset === 0) {
+        await db.from('memories')
+          .update({ embedding: rows[0].embedding })
+          .eq('id', body.memory_id)
+          .eq('user_id', uid);
+      }
 
       return corsResponse({ ok: true, chunks: chunks.length });
     }
