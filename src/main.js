@@ -18,7 +18,6 @@ import { saveEvent, updateEvent, deleteEvent, getAllEvents, deleteEventsByMemory
 import { putMedia, getMediaBlob, deleteMedia, mediaRef, isMediaRef, mediaIdFromRef } from './store/media.js';
 import { lockVault } from './store/vault.js';
 import { wipeLocalDatabase, deleteLegacyJobDatabase } from './store/db.js';
-import { getCloudData, copyCloudToLocal, deleteCloudData } from './store/migrateFromCloud.js';
 import { openVault, closeVault } from './vaultScreen.js';
 
 
@@ -86,8 +85,6 @@ async function init() {
     setupEventsInteractions();
     setupAddEventBtn();
     setupPendingEvents();
-    setupMigration();
-    checkCloudData();
     deleteLegacyJobDatabase().catch(() => {});
   } catch (err) {
     console.error('App initialization failed', err);
@@ -153,12 +150,10 @@ function bootAuth() {
       showToast('No active user session found.', 'error');
       return;
     }
-    const uid = user.uid;
 
     const confirmed = confirm(
       "Are you sure you want to permanently delete all your account data?\n\n" +
-      "This will erase all your memories, audio files, and life events on this device " +
-      "(and anything still in the cloud) forever.\n" +
+      "This will erase all your memories, audio files, and life events on this device forever.\n" +
       "This action CANNOT be undone."
     );
     if (!confirmed) return;
@@ -172,13 +167,10 @@ function bootAuth() {
     try {
       showToast('Deleting all data and files...', 'info');
 
-      // 1. Delete anything still in the cloud (memories, events, stored files)
-      await deleteCloudData(uid);
-
-      // 2. Delete the encrypted local database (memories, events, audio, imports, keys)
+      // 1. Delete the encrypted local database (memories, events, audio, imports, keys)
       await wipeLocalDatabase();
 
-      // 3. Sign out and start fresh
+      // 2. Sign out and start fresh
       showToast('Account data deleted successfully.', 'success');
       await signOutAndReset();
     } catch (err) {
@@ -295,89 +287,6 @@ function importedFileDate(file) {
   const ms = file.lastModified ?? (file.modifiedTime ? Date.parse(file.modifiedTime) : NaN);
   return Number.isFinite(ms) && ms > 0 ? new Date(ms).toISOString() : null;
 }
-
-// ── Cloud → device migration ───────────────────────────
-// Memories saved before Phase 3 live in Supabase. A banner offers to copy them
-// into the local encrypted vault; deleting the cloud copy is a separate step.
-let cloudData = null;
-let migrationRegistered = false;
-
-const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
-
-function setMigrateText(text) { $('migrate-text').textContent = text; }
-
-async function checkCloudData() {
-  try {
-    cloudData = await getCloudData();
-  } catch (err) {
-    console.warn('Could not check for memories in the cloud:', err);
-    return;
-  }
-  const { memories, events } = cloudData;
-  if (!memories.length && !events.length) return;
-  setMigrateText(
-    `You have ${plural(memories.length, 'memory', 'memories')} and ${plural(events.length, 'life event', 'life events')} ` +
-    `stored in the cloud from before. Move them to this device, where they're encrypted with your passphrase.`);
-  $('migrate-btn').classList.remove('hidden');
-  $('migrate-delete-btn').classList.add('hidden');
-  $('migrate-banner').classList.remove('hidden');
-}
-
-function setupMigration() {
-  if (migrationRegistered) return;
-  migrationRegistered = true;
-  $('migrate-btn').addEventListener('click', runMigration);
-  $('migrate-delete-btn').addEventListener('click', deleteCloudCopy);
-}
-
-async function runMigration() {
-  const btn = $('migrate-btn');
-  btn.disabled = true;
-  try {
-    const { memories, events, missingAudio } = await copyCloudToLocal(cloudData, setMigrateText);
-    await loadMemories();
-    renderTimeline();
-    if (!$('view-events').classList.contains('hidden')) await renderEventsTimeline();
-
-    let text = `Copied ${plural(memories, 'memory', 'memories')} and ${plural(events, 'life event', 'life events')} to this device and checked them.`;
-    if (missingAudio.length) {
-      text += ` The audio for ${missingAudio.length} couldn't be downloaded (${missingAudio.join(', ')}); their transcripts were copied.`;
-    }
-    text += ' The cloud copy is still there. Delete it once you have checked your memories here.';
-    setMigrateText(text);
-    btn.classList.add('hidden');
-    $('migrate-delete-btn').classList.remove('hidden');
-  } catch (err) {
-    console.error('Moving cloud data failed:', err);
-    setMigrateText(`Moving failed: ${err.message}. Nothing was deleted from the cloud, so you can try again.`);
-  } finally {
-    btn.disabled = false;
-  }
-}
-
-async function deleteCloudCopy() {
-  const ok = confirm(
-    'Delete the cloud copy of your memories, life events and audio?\n\n' +
-    'The copy on this device stays. This cannot be undone.');
-  if (!ok) return;
-  const btn = $('migrate-delete-btn');
-  btn.disabled = true;
-  try {
-    setMigrateText('Deleting the cloud copy…');
-    const { currentUser: getFbUser } = await import('./auth.js');
-    await deleteCloudData(getFbUser().uid);
-    $('migrate-banner').classList.add('hidden');
-    showToast('Cloud copy deleted. Your memories now live only on this device.', 'success');
-  } catch (err) {
-    console.error('Deleting the cloud copy failed:', err);
-    setMigrateText(`Deleting the cloud copy failed: ${err.message}. You can try again.`);
-  } finally {
-    btn.disabled = false;
-  }
-}
-
-
-
 
 // ── View Tabs (Memories / Life Events) ─────────────────
 function setupViewTabs() {
@@ -1239,7 +1148,7 @@ function setupEntryInteractions() {
       if (!aud) return;
 
       if (aud.paused) {
-        // 1. If it's stored audio and src is empty, decrypt it (or fetch a signed URL for old cloud paths)
+        // 1. If it's stored audio and src is empty, decrypt it
         if (!aud.src || aud.src === window.location.href || aud.src === '') {
           const path = aud.dataset.storagePath;
           if (path) {
@@ -1336,15 +1245,9 @@ function setupEntryInteractions() {
   });
 }
 
-/**
- * A playable URL for stored audio: locally encrypted media is decrypted into an
- * object URL (cached per memory); an old cloud storage path gets a signed URL.
- */
+/** A playable URL for stored audio: decrypted into an object URL, cached per memory. */
 async function resolveAudioSrc(entryId, path) {
-  if (!isMediaRef(path)) {
-    const { getSignedUrl } = await import('./services/storage.js');
-    return getSignedUrl(path);
-  }
+  if (!isMediaRef(path)) throw new Error('Audio not found on this device');
   if (!audioURLs.has(entryId)) {
     const blob = await getMediaBlob(mediaIdFromRef(path));
     if (!blob) throw new Error('Audio not found on this device');

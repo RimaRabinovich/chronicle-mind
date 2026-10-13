@@ -40,7 +40,7 @@ Problems in the current code:
   - Migration: if the cloud still has data, a banner offers "Move to this device". It copies memories (keeping their ids), events and audio, verifies every id locally, and then offers "Delete cloud copy" as a separate, confirmed step. `deleteUserFolder` now deletes every folder (it used to skip `video/` and anything past 100 files) and fails loudly instead of silently.
   - Deviation from the plan: media lives in IndexedDB, not OPFS. Safari's OPFS write support is patchy, and IndexedDB stores the encrypted bytes fine.
   - Tested in Node (WebCrypto plus fake-indexeddb): vault create/unlock/wrong passphrase/recover, records holding only id/ts/iv/ct, media round trip, jobs, and migration with stubbed Supabase.
-  - After the user verifies the migration: retire the `memories`, `events`, `embed`, `rag-query` and `upload` edge functions and drop the tables (manual).
+  - Cloud retired (2026-10-13): the user deleted the `memories`, `events`, `embed`, `rag-query` and `upload` functions, the `user-files` bucket (which had a public read/write policy) and the tables (recorded in `supabase/migrations/005_retire_cloud_storage.sql`). The app no longer has any cloud data code: the migration banner, `services/{memories,events,storage,rag,migration}.js`, the legacy `src/db.js` and `@supabase/supabase-js` are gone. Supabase now only hosts `ai-proxy`.
 
 ## Phase 0: Fix Summarize (small, do first) [DONE]
 - In `handleSummarize` (`src/main.js:1366`), mirror the media path: set `sumBox.querySelector('.summary-text').textContent`, remove `hidden` from the box, and add `hidden` to the button. On error, restore the label to `+ Summary`.
