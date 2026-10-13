@@ -28,7 +28,11 @@ export class AudioRecorder {
 
     // MediaRecorder
     const mimeType = this._bestMime();
-    this.mediaRecorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+    // 24 kbps Opus is plenty for speech and keeps ~2 hours under Whisper's 25 MB limit.
+    this.mediaRecorder = new MediaRecorder(stream, {
+      ...(mimeType ? { mimeType } : {}),
+      audioBitsPerSecond: 24000,
+    });
     this.chunks = [];
     this.mediaRecorder.ondataavailable = (e) => {
       if (e.data.size > 0) this.chunks.push(e.data);

@@ -21,6 +21,7 @@ import { uploadFile, deleteUserFolder } from './services/storage.js';
 
 // ── Other utilities ───────────────────────────────────────────────────
 import { transcribeAudio }           from './transcription.js';
+import { prepareAudio, transcribeChunks, MAX_DIRECT_BYTES } from './media/transcribePipeline.js';
 import { AudioRecorder }             from './recorder.js';
 
 import { summarizeContent, extractEvents } from './ai.js';
@@ -252,7 +253,7 @@ async function loadMemories() {
   // Map cloud schema to legacy shape for timeline rendering compatibility
   entries = cloud.map(m => ({
     id:           m.id,
-    timestamp:    m.created_at,
+    timestamp:    m.metadata?.captured_at || m.created_at,
     type:         m.type,
     content:      m.content,
     summary:      m.summary ?? null,
@@ -261,8 +262,23 @@ async function loadMemories() {
     duration:     m.duration_sec ?? null,
     metadata:     m.metadata ?? {},
     embedding:    [],                    // embeddings live in Supabase, not in-memory
-  })).reverse();                         // oldest → newest for timeline
+  }));
+  sortEntries();                         // oldest → newest for timeline
   updateCountBadge();
+}
+
+/** Keep entries ordered by when each memory happened (captured_at), oldest first. */
+function sortEntries() {
+  entries.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+}
+
+/**
+ * When an imported file was made: the file's last-modified date (local) or Drive's
+ * modifiedTime. Media files get a better date later from their embedded creation_time.
+ */
+function importedFileDate(file) {
+  const ms = file.lastModified ?? (file.modifiedTime ? Date.parse(file.modifiedTime) : NaN);
+  return Number.isFinite(ms) && ms > 0 ? new Date(ms).toISOString() : null;
 }
 
 // Legacy migration helper removed (no longer offered)
@@ -454,7 +470,11 @@ async function stopRecording() {
 
   $('transcribing-indicator').classList.remove('hidden');
   try {
-    const text = await transcribeAudio(audioBlob, getTranscribeLang());
+    const lang = getTranscribeLang();
+    // Recordings under ~2 hours fit in one Whisper request; longer ones go through the chunk pipeline.
+    const text = audioBlob.size > MAX_DIRECT_BYTES
+      ? (await transcribeChunks((await prepareAudio(audioBlob, { durationSec: recSeconds })).chunks, { language: lang })).text
+      : await transcribeAudio(audioBlob, lang);
     currentTranscript = text;
     $('transcript-text').textContent = text;
     $('transcript-preview').classList.remove('hidden');
@@ -596,6 +616,7 @@ async function handleSubmit() {
 
       const type = isVideo ? 'video' : (isAudio ? 'audio' : 'text');
       const timestamp = new Date().toISOString();
+      const fileDate  = importedFileDate(importFile);
 
       if (isText) {
         // Text files are fast, do it synchronously
@@ -612,7 +633,8 @@ async function handleSubmit() {
           summary: summary,
           metadata: {
             source: importSource === 'drive' ? 'google-drive' : 'local-upload',
-            file_name: importFile.name
+            file_name: importFile.name,
+            ...(fileDate && { captured_at: fileDate }),
           }
         });
         const id = saved.id;
@@ -620,7 +642,7 @@ async function handleSubmit() {
 
         const entry = {
           id:           saved.id,
-          timestamp:    saved.created_at || timestamp,
+          timestamp:    saved.metadata?.captured_at || saved.created_at || timestamp,
           type:         saved.type,
           content:      saved.content,
           summary:      saved.summary ?? null,
@@ -631,6 +653,7 @@ async function handleSubmit() {
           embedding:    [],
         };
         entries.push(entry);
+        sortEntries();
         updateCountBadge();
         renderTimeline();
         setTimeout(() => highlightEntry(id), 120);
@@ -664,7 +687,8 @@ async function handleSubmit() {
           duration_sec: mediaDuration,
           metadata: {
             source: sourceLoc === 'drive' ? 'google-drive' : 'local-upload',
-            file_name: importFileName
+            file_name: importFileName,
+            ...(fileDate && { captured_at: fileDate }),
           }
         });
         const id = saved.id;
@@ -672,7 +696,7 @@ async function handleSubmit() {
         // Render placeholder entry card with the local audio player immediately
         const entry = {
           id:           saved.id,
-          timestamp:    saved.created_at || timestamp,
+          timestamp:    saved.metadata?.captured_at || saved.created_at || timestamp,
           type:         saved.type,
           content:      saved.content,
           summary:      null,
@@ -683,6 +707,7 @@ async function handleSubmit() {
           embedding:    [],
         };
         entries.push(entry);
+        sortEntries();
         updateCountBadge();
         renderTimeline();
         setTimeout(() => highlightEntry(id), 120);
@@ -691,45 +716,89 @@ async function handleSubmit() {
         showToast('Media processing started in the background.', 'info');
 
         // Spawn async background processing flow
+        const lang = getTranscribeLang();
         (async () => {
+          // Progress goes into the card's placeholder text (not saved to the DB).
+          const setStatus = (text) => {
+            const el = $(`entry-${id}`)?.querySelector('.entry-content');
+            if (el) el.textContent = `[${text}]`;
+          };
+
           try {
-            // Step 1: If local file, upload in background
-            let fileUrlPath = null;
-            if (sourceLoc === 'local' && fileBlob) {
-              const { path } = await uploadFile(fileBlob, type, `${id}-${importFileName}`);
-              fileUrlPath = path;
-              await updateMemory({
-                id: id,
-                file_url: path,
-                file_type: fileBlob.type,
-                metadata: {
-                  source: 'local-upload',
-                  file_name: importFileName,
-                  storage_path: path
-                }
-              });
-              const entryInList = entries.find(e => e.id === id);
-              if (entryInList) entryInList.audioData = path;
-            }
-
-            // Step 2: Fetch Drive blob if needed (if ever enabled again)
-            let transcribeBlob = fileBlob;
-
-            if (!transcribeBlob) {
+            if (!fileBlob) {
               throw new Error('Failed to retrieve file binary blob.');
             }
 
-            // Step 3: Run audio transcription via Groq Whisper API
-            const transcribedText = await transcribeAudio(transcribeBlob, getTranscribeLang());
+            // Step 1: Compress to mono 16 kHz Opus and split into ~10-minute chunks
+            const { audio, chunks, duration, createdAt } = await prepareAudio(fileBlob, {
+              durationSec: mediaDuration,
+              onProgress: (stage, ratio) => setStatus(stage === 'loading'
+                ? 'Loading audio tools…'
+                : `Compressing audio… ${Math.round(ratio * 100)}%`),
+            });
+
+            // Step 2: Upload only the compressed audio, in parallel with transcription.
+            // The original file stays on the user's device.
+            const uploadBlob = audio || fileBlob;
+            const uploadName = audio
+              ? `${id}-${importFileName.replace(/\.[^.]+$/, '')}.webm`
+              : `${id}-${importFileName}`;
+            const uploadPromise = sourceLoc === 'local'
+              ? uploadFile(uploadBlob, type, uploadName).catch(err => {
+                  console.error('Audio upload failed:', err);
+                  showToast(`Couldn't store audio for "${importFileName}"; transcript will still be saved.`, 'error');
+                  return null;
+                })
+              : Promise.resolve(null);
+
+            // Step 3: Transcribe each chunk via Groq Whisper and stitch the timestamps
+            const { text: transcribedText, segments } = await transcribeChunks(chunks, {
+              language: lang,
+              onProgress: (done, total) => {
+                if (done < total) {
+                  setStatus(total > 1 ? `Transcribing part ${done + 1} of ${total}…` : 'Transcribing…');
+                }
+              },
+            });
             if (!transcribedText.trim()) {
               throw new Error('Transcription completed but returned empty text.');
             }
 
+            const uploaded = await uploadPromise;
+            const finalDuration = mediaDuration ?? (duration ? Math.round(duration) : null);
+            const updates = {
+              id,
+              content: transcribedText,
+              duration_sec: finalDuration,
+              metadata: {
+                source: sourceLoc === 'drive' ? 'google-drive' : 'local-upload',
+                file_name: importFileName,
+                // The recording date embedded in the media beats the file's modified date.
+                captured_at: createdAt || fileDate || undefined,
+                transcript_segments: segments,
+              },
+            };
+            if (uploaded) {
+              updates.file_url = uploaded.path;
+              updates.file_type = uploadBlob.type;
+              updates.metadata.storage_path = uploaded.path;
+            }
+
             // Update content in DB and local state
-            await updateMemory({ id: id, content: transcribedText });
+            await updateMemory(updates);
             const entryInList = entries.find(e => e.id === id);
-            if (entryInList) entryInList.content = transcribedText;
-            
+            if (entryInList) {
+              entryInList.content = transcribedText;
+              entryInList.duration = finalDuration;
+              entryInList.metadata = updates.metadata;
+              if (uploaded) entryInList.audioData = uploaded.path;
+              if (createdAt && createdAt !== entryInList.timestamp) {
+                entryInList.timestamp = createdAt;
+                sortEntries();
+                renderTimeline();
+              }
+            }
+
             const card = $(`entry-${id}`);
             if (card) {
               card.querySelector('.entry-content').textContent = transcribedText;
@@ -1026,7 +1095,8 @@ function buildEntryCard(entry, displayIndex) {
 
 
   let audioHTML = '';
-  if (entry.type === 'audio') {
+  // Video imports are stored as compressed audio, so they get the same player.
+  if (entry.type === 'audio' || entry.type === 'video') {
     if (entry.audioData) {
       const isPrivatePath = !entry.audioData.startsWith('blob:') && !entry.audioData.startsWith('http');
       const audioSrc = isPrivatePath ? '' : entry.audioData;

@@ -20,8 +20,12 @@ Problems in the current code:
 
 ## Status (2026-10-12)
 - **Phase 0: DONE** (commit `2cca796`, which also switched the retired Groq Llama models to `gpt-oss`; the Llama model names in Phase 4 are out of date).
-- **Phase 1: DONE.** `ai-proxy` is deployed with `--no-verify-jwt` and the app works through it. Still to do by hand: rotate the old Groq key, which shipped in earlier bundles, and remove `VITE_GROQ_API_KEY` from `.env`.
-- **Next: Phase 2** (media pipeline).
+- **Phase 1: DONE.** `ai-proxy` is deployed with `--no-verify-jwt` and the app works through it. The old Groq key has been rotated and `VITE_GROQ_API_KEY` removed from `.env`. Also added a spoken-language picker (Auto/Hebrew/English) for Whisper.
+- **Phase 2: DONE (tested in the app with an MP4 import).** Added `src/media/compress.js` (ffmpeg.wasm turns any audio or video into mono 16 kHz Opus at 32 kbps (raised from 16 kbps/voip after the first test dropped sentences) and splits it into 600 s chunks with a segment list) and `src/media/transcribePipeline.js`, which transcribes the chunks in order, passing the end of the previous chunk as the prompt, with retry and backoff and stitched `verbose_json` segments. Import now uploads only the compressed audio and saves `metadata.transcript_segments`. Recorder bitrate is 24 kbps. Video entries get the audio player. The build passes, and the ffmpeg arguments were checked with native ffmpeg.
+  - Changes from the plan: kept `whisper-large-v3` (Hebrew quality) instead of turbo; chunks run one at a time (each needs the previous chunk's text as its prompt); no separate `compress.worker.js` (ffmpeg.wasm runs in its own worker).
+  - Imports now save `metadata.captured_at` (the media's embedded `creation_time` via ffmpeg, else the file's last-modified date), and the memories list is sorted by it (falls back to `created_at`). This is the client-side start of Phase 4's `captured_at`; no DB migration yet.
+  - Still to do: resume after refresh (persist the job and chunks) and an optional "keep original" setting.
+  - Hosting note: Cloudflare Pages has a 25 MB per-file limit, smaller than the 32 MB wasm file; Vercel and Netlify are fine.
 
 ## Phase 0: Fix Summarize (small, do first) [DONE]
 - In `handleSummarize` (`src/main.js:1366`), mirror the media path: set `sumBox.querySelector('.summary-text').textContent`, remove `hidden` from the box, and add `hidden` to the button. On error, restore the label to `+ Summary`.

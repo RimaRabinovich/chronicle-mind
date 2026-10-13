@@ -45,7 +45,9 @@ async function parseResponse(res) {
             ? data.message
             : `Edge Function error ${res.status}`;
 
-    throw new Error(message);
+    const err = new Error(message);
+    err.status = res.status; // lets callers decide whether to retry
+    throw err;
   }
 
   return data ?? {};

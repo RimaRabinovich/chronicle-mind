@@ -2,7 +2,8 @@ import { defineConfig } from 'vite';
 
 export default defineConfig({
   optimizeDeps: {
-    exclude: ['@huggingface/transformers']
+    // ffmpeg.wasm spawns its own worker; pre-bundling breaks its relative URLs
+    exclude: ['@huggingface/transformers', '@ffmpeg/ffmpeg']
   },
   worker: {
     format: 'es'

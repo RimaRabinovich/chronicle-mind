@@ -33,7 +33,7 @@ export async function listDriveFiles(accessToken, search = '') {
 
   q = `${q} and trashed = false`;
 
-  const url = `https://www.googleapis.com/drive/v3/files?pageSize=50&q=${encodeURIComponent(q)}&fields=files(id,name,mimeType,webViewLink,size)&orderBy=modifiedTime desc`;
+  const url = `https://www.googleapis.com/drive/v3/files?pageSize=50&q=${encodeURIComponent(q)}&fields=files(id,name,mimeType,webViewLink,size,modifiedTime)&orderBy=modifiedTime desc`;
 
   const res = await fetch(url, {
     headers: { Authorization: `Bearer ${accessToken}` }
