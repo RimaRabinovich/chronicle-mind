@@ -81,30 +81,38 @@ export async function deleteFile(path) {
 }
 
 /**
- * Permanently delete all files stored under a user's UID folder.
+ * Permanently delete all files stored under a user's UID folder
+ * (uploads live in <uid>/audio/, <uid>/video/, …). Throws if anything fails.
  * @param {string} uid
  */
 export async function deleteUserFolder(uid) {
   const client = getSupabaseClient();
-  // List all files in the bucket under the user's uid folder
-  const { data: files, error: listError } = await client.storage
-    .from(BUCKET)
-    .list(`${uid}/audio`);
+  const bucket = client.storage.from(BUCKET);
 
-  if (listError) {
-    console.warn('Failed to list files for folder deletion:', listError);
-    return;
-  }
+  // list() returns one level, at most `limit` items: folders first, then files.
+  const { data: folders, error: folderError } = await bucket.list(uid, { limit: 1000 });
+  if (folderError) throw new Error(`Storage list failed: ${folderError.message}`);
 
-  if (files && files.length > 0) {
-    const pathsToDelete = files.map(f => `${uid}/audio/${f.name}`);
-    const { error: removeError } = await client.storage
-      .from(BUCKET)
-      .remove(pathsToDelete);
+  const remove = async (paths) => {
+    const { data, error } = await bucket.remove(paths);
+    if (error) throw new Error(`Storage delete failed: ${error.message}`);
+    // A remove blocked by storage policies "succeeds" with nothing removed.
+    if (!data?.length) throw new Error('Storage delete failed: no files were removed');
+  };
 
-    if (removeError) {
-      console.warn('Failed to delete files during folder deletion:', removeError);
+  // Folder entries have no id; anything with an id is a file directly under <uid>/.
+  const topFiles = (folders ?? []).filter(f => f.id).map(f => `${uid}/${f.name}`);
+  if (topFiles.length) await remove(topFiles);
+
+  for (const folder of (folders ?? []).filter(f => !f.id)) {
+    const prefix = `${uid}/${folder.name}`;
+    // Remove page by page; each removal shrinks the listing, so always read from offset 0.
+    for (;;) {
+      const { data: files, error } = await bucket.list(prefix, { limit: 1000 });
+      if (error) throw new Error(`Storage list failed: ${error.message}`);
+      const paths = (files ?? []).filter(f => f.id).map(f => `${prefix}/${f.name}`);
+      if (paths.length === 0) break;
+      await remove(paths);
     }
   }
 }
-

@@ -36,7 +36,62 @@
 
       <p id="login-error" class="login-error hidden"></p>
 
-      <p class="login-legal">By signing in, you agree to our terms. Your memories are stored locally on this device.</p>
+      <p class="login-legal">By signing in, you agree to our terms. Your memories are encrypted and stored only on this device.</p>
+    </div>
+  </div>
+
+  <!-- ── Vault: create / unlock / recover ───────────── -->
+  <div id="vault-screen" class="login-screen hidden" role="main" aria-label="Unlock your memories">
+    <div class="login-card vault-card">
+      <div class="login-brand">
+        <span class="login-brand-icon" aria-hidden="true">
+          <svg xmlns="http://www.w3.org/2000/svg" width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+        </span>
+        <h1 class="login-title" id="vault-title">Unlock your memories</h1>
+        <p class="login-subtitle" id="vault-subtitle"></p>
+      </div>
+
+      <!-- First run: choose a passphrase -->
+      <form id="vault-create" class="vault-form hidden" autocomplete="off">
+        <p class="vault-text">Your memories are encrypted on this device with a passphrase only you know. Nobody else can read them, and nobody can reset the passphrase for you.</p>
+        <input type="password" id="vault-new-pass" placeholder="Passphrase (at least 8 characters)" autocomplete="new-password" minlength="8" required>
+        <input type="password" id="vault-new-pass2" placeholder="Repeat passphrase" autocomplete="new-password" required>
+        <label class="vault-check"><input type="checkbox" id="vault-create-remember"> Stay unlocked on this device</label>
+        <button type="submit" class="btn btn-primary btn-full">Create my vault</button>
+      </form>
+
+      <!-- Shown once after creating the vault -->
+      <div id="vault-recovery" class="vault-form hidden">
+        <p class="vault-text">This recovery key is the only way back in if you forget your passphrase. Without both, your memories cannot be recovered. Save it somewhere safe, like a password manager or on paper.</p>
+        <code id="vault-recovery-key" class="vault-key"></code>
+        <div class="vault-row">
+          <button type="button" id="vault-copy-key" class="btn btn-ghost">Copy</button>
+          <button type="button" id="vault-download-key" class="btn btn-ghost">Download</button>
+        </div>
+        <label class="vault-check"><input type="checkbox" id="vault-saved-check"> I saved my recovery key</label>
+        <button type="button" id="vault-recovery-done" class="btn btn-primary btn-full" disabled>Continue</button>
+      </div>
+
+      <!-- Returning: unlock with the passphrase -->
+      <form id="vault-unlock" class="vault-form hidden">
+        <input type="password" id="vault-pass" placeholder="Passphrase" autocomplete="current-password" required>
+        <label class="vault-check"><input type="checkbox" id="vault-unlock-remember"> Stay unlocked on this device</label>
+        <button type="submit" class="btn btn-primary btn-full">Unlock</button>
+        <button type="button" id="vault-show-recover" class="btn-link vault-link">Forgot your passphrase? Use your recovery key</button>
+      </form>
+
+      <!-- Forgot passphrase: recovery key + new passphrase -->
+      <form id="vault-recover" class="vault-form hidden" autocomplete="off">
+        <input type="text" id="vault-recovery-input" placeholder="Recovery key (XXXX-XXXX-…)" spellcheck="false" required>
+        <input type="password" id="vault-reset-pass" placeholder="New passphrase (at least 8 characters)" autocomplete="new-password" minlength="8" required>
+        <input type="password" id="vault-reset-pass2" placeholder="Repeat new passphrase" autocomplete="new-password" required>
+        <label class="vault-check"><input type="checkbox" id="vault-recover-remember"> Stay unlocked on this device</label>
+        <button type="submit" class="btn btn-primary btn-full">Reset passphrase and unlock</button>
+        <button type="button" id="vault-show-unlock" class="btn-link vault-link">Back</button>
+      </form>
+
+      <p id="vault-error" class="login-error hidden" role="alert"></p>
+      <button type="button" id="vault-signout" class="btn-link vault-link">Sign out</button>
     </div>
   </div>
 
@@ -61,6 +116,10 @@
           <span id="user-name" class="user-name"></span>
         </div>
         <div class="user-dropdown hidden" id="user-dropdown" role="menu">
+          <button id="lock-btn" class="dropdown-item" role="menuitem">
+            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-lock"><rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+            Lock
+          </button>
           <button id="signout-btn" class="dropdown-item" role="menuitem">
             <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-log-out"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" x2="9" y1="12" y2="12"/></svg>
             Sign out
@@ -259,6 +318,13 @@
 
         <!-- ── Memories view ──────────────────── -->
         <div id="view-memories" class="panel-view active" role="tabpanel" aria-labelledby="vtab-memories">
+          <div id="migrate-banner" class="migrate-banner hidden" role="region" aria-label="Move your memories to this device">
+            <p id="migrate-text" class="migrate-text"></p>
+            <div class="vault-row">
+              <button type="button" id="migrate-btn" class="btn btn-primary btn-sm">Move to this device</button>
+              <button type="button" id="migrate-delete-btn" class="btn btn-ghost btn-sm hidden">Delete cloud copy</button>
+            </div>
+          </div>
           <div id="timeline-loading" class="timeline-empty">
             <div class="spinner" style="margin: 0 auto var(--s2);"></div>
             <p style="font-size: 13px; color: var(--text-3);">Loading memories...</p>

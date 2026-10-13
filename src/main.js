@@ -12,17 +12,20 @@
 
 import './style.css';
 
-// ── Cloud service layer (replaces local IndexedDB db.js) ──────────────
-import { saveMemory, getAllMemories, deleteMemory, updateMemory, deleteAllUserMemories } from './services/memories.js';
-import { saveEvent, updateEvent, deleteEvent, getAllEvents, deleteEventsByMemoryId, deleteAllUserEvents } from './services/events.js';
-import { triggerEmbedding } from './services/rag.js';
-import { uploadFile, deleteFile, deleteUserFolder } from './services/storage.js';
+// ── Local encrypted data layer (Phase 3; replaces the Supabase tables) ──
+import { saveMemory, getAllMemories, deleteMemory, updateMemory } from './store/memories.js';
+import { saveEvent, updateEvent, deleteEvent, getAllEvents, deleteEventsByMemoryId } from './store/events.js';
+import { putMedia, getMediaBlob, deleteMedia, mediaRef, isMediaRef, mediaIdFromRef } from './store/media.js';
+import { lockVault } from './store/vault.js';
+import { wipeLocalDatabase, deleteLegacyJobDatabase } from './store/db.js';
+import { getCloudData, copyCloudToLocal, deleteCloudData } from './store/migrateFromCloud.js';
+import { openVault, closeVault } from './vaultScreen.js';
 
 
 // ── Other utilities ───────────────────────────────────────────────────
 import { transcribeAudio }           from './transcription.js';
 import { prepareAudio, transcribeChunks, MAX_DIRECT_BYTES } from './media/transcribePipeline.js';
-import { saveJob, getJob, updateJob, getAllJobs, deleteJob, clearJobs, withJobLock } from './media/jobStore.js';
+import { saveJob, updateJob, getAllJobs, deleteJob, withJobLock, putJobChunks, getJobChunkBlob, deleteJobChunks } from './media/jobStore.js';
 import { AudioRecorder }             from './recorder.js';
 
 import { summarizeContent, extractEvents } from './ai.js';
@@ -83,6 +86,9 @@ async function init() {
     setupEventsInteractions();
     setupAddEventBtn();
     setupPendingEvents();
+    setupMigration();
+    checkCloudData();
+    deleteLegacyJobDatabase().catch(() => {});
   } catch (err) {
     console.error('App initialization failed', err);
     showToast(
@@ -127,14 +133,13 @@ function bootAuth() {
   });
 
   // Sign-out button inside the dropdown
-  $('signout-btn').addEventListener('click', async () => {
-    await signOutUser();
-    // Reset in-memory state so re-login starts fresh
-    entries = [];
-    eventsCount = 0;
-    pendingEvents = [];
-    eventsCache.clear();
-    audioURLs.clear();
+  $('signout-btn').addEventListener('click', signOutAndReset);
+
+  // Lock: forget the key (also on this device) and start over at the unlock screen.
+  // Unfinished imports resume after the next unlock.
+  $('lock-btn').addEventListener('click', async () => {
+    await lockVault({ forget: true });
+    location.reload();
   });
 
   // Delete account button inside the dropdown
@@ -152,7 +157,8 @@ function bootAuth() {
 
     const confirmed = confirm(
       "Are you sure you want to permanently delete all your account data?\n\n" +
-      "This will erase all your memories, audio files, and life events forever.\n" +
+      "This will erase all your memories, audio files, and life events on this device " +
+      "(and anything still in the cloud) forever.\n" +
       "This action CANNOT be undone."
     );
     if (!confirmed) return;
@@ -166,22 +172,15 @@ function bootAuth() {
     try {
       showToast('Deleting all data and files...', 'info');
 
-      // 1. Delete all memories from Supabase (deletes memory rows and chunks)
-      await deleteAllUserMemories();
+      // 1. Delete anything still in the cloud (memories, events, stored files)
+      await deleteCloudData(uid);
 
-      // 2. Delete all life events from Supabase (including manually created events)
-      await deleteAllUserEvents();
+      // 2. Delete the encrypted local database (memories, events, audio, imports, keys)
+      await wipeLocalDatabase();
 
-      // 3. Delete all audio files from private Supabase Storage
-      await deleteUserFolder(uid);
-
-      // 4. Drop unfinished media imports stored in this browser
-      await clearJobs().catch(() => {});
-
-      // 5. Force Sign out user
-      await signOutUser();
-
+      // 3. Sign out and start fresh
       showToast('Account data deleted successfully.', 'success');
+      await signOutAndReset();
     } catch (err) {
       console.error('Account data deletion failed:', err);
       showToast(`Deletion failed: ${err.message}`, 'error');
@@ -194,18 +193,30 @@ function bootAuth() {
   // Auth state subscriber — single source of truth
   onAuthChange(async (user) => {
     if (user) {
-      // User is signed in
+      // Signed in: the encrypted vault must be unlocked before the app can load data.
+      if (appInitialized) return;
+      appInitialized = true;
+      $('login-screen').classList.add('hidden');
+      await openVault(signOutAndReset);
       showApp(user);
-      if (!appInitialized) {
-        appInitialized = true;
-        await init();
-      }
+      await init();
     } else {
       // User signed out — reset flag so re-login re-initialises cleanly
       appInitialized = false;
+      closeVault();
       showLogin();
     }
   });
+}
+
+/**
+ * Lock the vault (forgetting any remembered key), sign out, and reload so no
+ * decrypted data or running import survives in memory.
+ */
+async function signOutAndReset() {
+  await lockVault({ forget: true }).catch(() => {});
+  await signOutUser();
+  location.reload();
 }
 
 
@@ -253,20 +264,19 @@ function googleBtnHTML() {
 
 // ── Data ───────────────────────────────────────────────
 async function loadMemories() {
-  // Memories come newest-first from the API; reverse for timeline render
-  const cloud = await getAllMemories({ limit: 500 });
-  // Map cloud schema to legacy shape for timeline rendering compatibility
-  entries = cloud.map(m => ({
+  // Decrypted from the local vault; mapped to the shape the timeline renders
+  const stored = await getAllMemories();
+  entries = stored.map(m => ({
     id:           m.id,
     timestamp:    m.metadata?.captured_at || m.created_at,
     type:         m.type,
     content:      m.content,
     summary:      m.summary ?? null,
-    audioData:    m.file_url ?? null,    // audio played via URL, not DataURL
+    audioData:    m.file_url ?? null,    // "media:<id>" (decrypted on play) or a link
     audioMimeType:m.file_type ?? null,
     duration:     m.duration_sec ?? null,
     metadata:     m.metadata ?? {},
-    embedding:    [],                    // embeddings live in Supabase, not in-memory
+    embedding:    [],                    // local embeddings arrive in Phase 4
   }));
   sortEntries();                         // oldest → newest for timeline
   updateCountBadge();
@@ -286,7 +296,85 @@ function importedFileDate(file) {
   return Number.isFinite(ms) && ms > 0 ? new Date(ms).toISOString() : null;
 }
 
-// Legacy migration helper removed (no longer offered)
+// ── Cloud → device migration ───────────────────────────
+// Memories saved before Phase 3 live in Supabase. A banner offers to copy them
+// into the local encrypted vault; deleting the cloud copy is a separate step.
+let cloudData = null;
+let migrationRegistered = false;
+
+const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+
+function setMigrateText(text) { $('migrate-text').textContent = text; }
+
+async function checkCloudData() {
+  try {
+    cloudData = await getCloudData();
+  } catch (err) {
+    console.warn('Could not check for memories in the cloud:', err);
+    return;
+  }
+  const { memories, events } = cloudData;
+  if (!memories.length && !events.length) return;
+  setMigrateText(
+    `You have ${plural(memories.length, 'memory', 'memories')} and ${plural(events.length, 'life event', 'life events')} ` +
+    `stored in the cloud from before. Move them to this device, where they're encrypted with your passphrase.`);
+  $('migrate-btn').classList.remove('hidden');
+  $('migrate-delete-btn').classList.add('hidden');
+  $('migrate-banner').classList.remove('hidden');
+}
+
+function setupMigration() {
+  if (migrationRegistered) return;
+  migrationRegistered = true;
+  $('migrate-btn').addEventListener('click', runMigration);
+  $('migrate-delete-btn').addEventListener('click', deleteCloudCopy);
+}
+
+async function runMigration() {
+  const btn = $('migrate-btn');
+  btn.disabled = true;
+  try {
+    const { memories, events, missingAudio } = await copyCloudToLocal(cloudData, setMigrateText);
+    await loadMemories();
+    renderTimeline();
+    if (!$('view-events').classList.contains('hidden')) await renderEventsTimeline();
+
+    let text = `Copied ${plural(memories, 'memory', 'memories')} and ${plural(events, 'life event', 'life events')} to this device and checked them.`;
+    if (missingAudio.length) {
+      text += ` The audio for ${missingAudio.length} couldn't be downloaded (${missingAudio.join(', ')}); their transcripts were copied.`;
+    }
+    text += ' The cloud copy is still there. Delete it once you have checked your memories here.';
+    setMigrateText(text);
+    btn.classList.add('hidden');
+    $('migrate-delete-btn').classList.remove('hidden');
+  } catch (err) {
+    console.error('Moving cloud data failed:', err);
+    setMigrateText(`Moving failed: ${err.message}. Nothing was deleted from the cloud, so you can try again.`);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function deleteCloudCopy() {
+  const ok = confirm(
+    'Delete the cloud copy of your memories, life events and audio?\n\n' +
+    'The copy on this device stays. This cannot be undone.');
+  if (!ok) return;
+  const btn = $('migrate-delete-btn');
+  btn.disabled = true;
+  try {
+    setMigrateText('Deleting the cloud copy…');
+    const { currentUser: getFbUser } = await import('./auth.js');
+    await deleteCloudData(getFbUser().uid);
+    $('migrate-banner').classList.add('hidden');
+    showToast('Cloud copy deleted. Your memories now live only on this device.', 'success');
+  } catch (err) {
+    console.error('Deleting the cloud copy failed:', err);
+    setMigrateText(`Deleting the cloud copy failed: ${err.message}. You can try again.`);
+  } finally {
+    btn.disabled = false;
+  }
+}
 
 
 
@@ -643,7 +731,6 @@ async function handleSubmit() {
           }
         });
         const id = saved.id;
-        triggerEmbedding(id, content);
 
         const entry = {
           id:           saved.id,
@@ -756,26 +843,30 @@ async function handleSubmit() {
   try {
     const timestamp = new Date().toISOString();
 
-    // 1. Save record to Supabase metadata immediately (so transcript is saved right away)
+    // 1. Store the recording (encrypted, on this device), then the memory that points to it
+    let audioFields = {};
+    if (currentMode === 'audio' && audioBlob) {
+      const mediaId = `audio-${crypto.randomUUID()}`;
+      await putMedia(mediaId, audioBlob);
+      audioFields = { file_url: mediaRef(mediaId), file_type: audioBlob.type };
+    }
     const saved = await saveMemory({
       content:      content,
       type:         currentMode === 'audio' ? 'audio' : 'text',
       source:       'manual',
       duration_sec: currentMode === 'audio' ? recSeconds : null,
       metadata:     {},
+      ...audioFields,
     });
     const id = saved.id;
 
-    // 2. Trigger server-side embedding (fire-and-forget)
-    triggerEmbedding(id, content);
-
-    // 3. Create a local Object URL for immediate in-browser playback
+    // 2. Create a local Object URL for immediate in-browser playback
     let localAudioURL = null;
     if (currentMode === 'audio' && audioBlob) {
       localAudioURL = URL.createObjectURL(audioBlob);
     }
 
-    // 4. Map DB row to entry structure and add to local list for instant render
+    // 3. Map DB row to entry structure and add to local list for instant render
     const entry = {
       id:           saved.id,
       timestamp:    saved.created_at || timestamp,
@@ -792,40 +883,11 @@ async function handleSubmit() {
     entries.push(entry);
     updateCountBadge();
 
-    // 5. Render immediately
+    // 4. Render immediately
     renderTimeline();
     setTimeout(() => highlightEntry(id), 120);
 
-    // 6. Start background audio upload to Supabase Storage (non-blocking)
-    if (currentMode === 'audio' && audioBlob) {
-      const recordedBlob = audioBlob; // capture reference
-      const fileName = `${id}.webm`;
-      (async () => {
-        try {
-          const { path } = await uploadFile(recordedBlob, 'audio', fileName);
-          // Update DB row with private storage path
-          await updateMemory({
-            id: id,
-            file_url: path,
-            file_type: recordedBlob.type,
-            metadata: { storage_path: path }
-          });
-          
-          // Update the in-memory entry to use the private path now
-          const entryInList = entries.find(e => e.id === id);
-          if (entryInList) {
-            entryInList.audioData = path;
-          }
-
-        } catch (err) {
-          console.error('Asynchronous audio upload failed:', err);
-          showToast('Failed to upload audio to cloud, but transcript is saved.', 'error');
-        }
-      })();
-    }
-
-
-    // 7. Reset inputs
+    // 5. Reset inputs
     if (currentMode === 'text') {
       $('thought-input').value = '';
       $('char-count').textContent = '0 characters';
@@ -838,7 +900,7 @@ async function handleSubmit() {
 
     showToast('Memory saved!', 'success');
 
-    // 8. Extract life events in the background (non-blocking)
+    // 6. Extract life events in the background (non-blocking)
     const evSrc = currentMode === 'audio' ? 'audio' : 'memory';
     extractAndSaveEvents(id, content, evSrc);
 
@@ -1177,16 +1239,14 @@ function setupEntryInteractions() {
       if (!aud) return;
 
       if (aud.paused) {
-        // 1. If it's a private storage path and src is empty, fetch a secure signed URL dynamically
+        // 1. If it's stored audio and src is empty, decrypt it (or fetch a signed URL for old cloud paths)
         if (!aud.src || aud.src === window.location.href || aud.src === '') {
           const path = aud.dataset.storagePath;
           if (path) {
             playBtn.disabled = true;
             playBtn.innerHTML = '<span class="preparing-spinner" style="display: inline-block; width: 10px; height: 10px; border: 1.5px solid var(--text-3); border-top-color: transparent; border-radius: 50%; animation: spin 1s linear infinite; flex-shrink: 0;"></span>';
             try {
-              const { getSignedUrl } = await import('./services/storage.js');
-              const signedUrl = await getSignedUrl(path);
-              aud.src = signedUrl;
+              aud.src = await resolveAudioSrc(id, path);
               aud.load();
 
               // Wait for metadata to load to ensure playback starts properly
@@ -1206,8 +1266,8 @@ function setupEntryInteractions() {
                 setTimeout(onLoaded, 1000); // safety timeout
               });
             } catch (err) {
-              console.error('Failed to load signed URL:', err);
-              showToast('Failed to load private audio link.', 'error');
+              console.error('Failed to load audio:', err);
+              showToast('Failed to load this audio.', 'error');
               playBtn.disabled = false;
               playBtn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-play"><polygon points="6 3 20 12 6 21 6 3"/></svg>';
               return;
@@ -1276,6 +1336,23 @@ function setupEntryInteractions() {
   });
 }
 
+/**
+ * A playable URL for stored audio: locally encrypted media is decrypted into an
+ * object URL (cached per memory); an old cloud storage path gets a signed URL.
+ */
+async function resolveAudioSrc(entryId, path) {
+  if (!isMediaRef(path)) {
+    const { getSignedUrl } = await import('./services/storage.js');
+    return getSignedUrl(path);
+  }
+  if (!audioURLs.has(entryId)) {
+    const blob = await getMediaBlob(mediaIdFromRef(path));
+    if (!blob) throw new Error('Audio not found on this device');
+    audioURLs.set(entryId, URL.createObjectURL(blob));
+  }
+  return audioURLs.get(entryId);
+}
+
 function highlightEntry(id) {
   document.querySelectorAll('.entry-card.highlighted').forEach(c => c.classList.remove('highlighted'));
   const card = $(`entry-${id}`);
@@ -1295,21 +1372,11 @@ async function handleDeleteEntry(id) {
     await new Promise(r => setTimeout(r, 200));
   }
 
-  // Find entry in local list before deleting to remove private audio/video file if exists
-  const entry = entries.find(e => e.id === id);
-  if (entry && (entry.type === 'audio' || entry.type === 'video') && entry.audioData) {
-    const isPrivatePath = !entry.audioData.startsWith('blob:') && !entry.audioData.startsWith('http');
-    if (isPrivatePath) {
-      try {
-        const { deleteFile } = await import('./services/storage.js');
-        await deleteFile(entry.audioData);
-
-      } catch (err) {
-        console.warn('Failed to delete file from bucket:', err);
-      }
-    }
+  // deleteMemory also removes the memory's stored audio; release any decrypted copy.
+  if (audioURLs.has(id)) {
+    URL.revokeObjectURL(audioURLs.get(id));
+    audioURLs.delete(id);
   }
-
 
   await deleteMemory(id);
   await deleteEventsByMemoryId(id);   // clean up extracted events too
@@ -1408,35 +1475,31 @@ function queueMediaJob(job, fileBlob = null) {
 }
 
 /**
- * Stop an import whose memory is being deleted, forget its saved progress, and
- * remove audio it already uploaded (the card may still be playing a local copy).
+ * Stop an import whose memory is being deleted and forget its saved progress
+ * (including its compressed audio, in case it wasn't linked to the memory yet).
  */
 async function cancelMediaJob(id) {
   jobControllers.get(id)?.abort(new DOMException('Import cancelled', 'AbortError'));
-  const job = await getJob(id).catch(() => null);
-  if (!job) return;
   await deleteJob(id).catch(() => {});
-  if (job.uploadedPath) {
-    await deleteFile(job.uploadedPath).catch(err => console.warn('Failed to delete file from bucket:', err));
-  }
+  await deleteMedia(`audio-${id}`).catch(() => {});
 }
 
 /**
- * Compress → upload → transcribe → summarize one imported media file, saving
+ * Compress → store → transcribe → summarize one imported media file, saving
  * progress to the job store after each step so a refresh can pick it up again.
  * @param {object} job          record from media/jobStore.js
  * @param {Blob} [fileBlob]     the original file; only needed if not yet compressed
  * @param {AbortSignal} signal  aborted when the memory is deleted
  */
 async function runMediaJob(job, fileBlob, signal) {
-  const { id, type, fileName } = job;
+  const { id, fileName } = job;
   const setStatus = (text) => setJobStatus(id, text);
 
   try {
     signal.throwIfAborted();
 
     // Interrupted while compressing on an earlier page load: the original file is
-    // gone, so remove the placeholder (nothing was uploaded yet) and ask for a re-import.
+    // gone, so remove the placeholder and ask for a re-import.
     if (!fileBlob && !job.chunks && job.transcript == null) {
       await deleteJob(id);
       await deleteMemory(id).catch(err => console.error('Failed to remove interrupted import:', err));
@@ -1456,43 +1519,29 @@ async function runMediaJob(job, fileBlob, signal) {
           : `Compressing audio… ${Math.round(ratio * 100)}%`),
       });
       signal.throwIfAborted();
-      job = await updateJob(id, { audio, chunks, duration, createdAt, results: [] });
+
+      // Step 2: Keep only the compressed audio (encrypted, on this device) as the
+      // memory's audio; the original file stays wherever the user has it. Without
+      // compression, the single chunk is the original file.
+      setStatus('Saving audio…');
+      const keep = audio || chunks[0].blob;
+      const mediaId = `audio-${id}`;
+      await putMedia(mediaId, keep);
+      await updateMemory({ id, file_url: mediaRef(mediaId), file_type: keep.type });
+      job = await updateJob(id, { chunks: await putJobChunks(id, chunks), duration, createdAt, results: [] });
     }
 
     if (job.transcript == null) {
-      // Step 2: Upload only the compressed audio, in parallel with transcription.
-      // The original file stays on the user's device. (Without compression, the
-      // single chunk is the original file.) The path is saved to the memory right
-      // away so the player works even if a later step is interrupted.
-      const uploadBlob = job.audio || job.chunks[0].blob;
-      const uploadName = job.audio
-        ? `${id}-${fileName.replace(/\.[^.]+$/, '')}.webm`
-        : `${id}-${fileName}`;
-      const uploadPromise = job.sourceLoc === 'local' && job.uploadedPath === undefined
-        ? uploadFile(uploadBlob, type, uploadName)
-            .then(async ({ path }) => {
-              try {
-                signal.throwIfAborted();
-                await updateMemory({ id, file_url: path, file_type: uploadBlob.type });
-                await updateJob(id, { uploadedPath: path });
-                return path;
-              } catch (err) {
-                if (!signal.aborted) throw err;
-                // Cancelled around the upload: don't leave the file behind.
-                await deleteFile(path).catch(() => {});
-                return null;
-              }
-            })
-            .catch(err => {
-              if (signal.aborted) return null;
-              console.error('Audio upload failed:', err);
-              showToast(`Couldn't store audio for "${fileName}"; transcript will still be saved.`, 'error');
-              return updateJob(id, { uploadedPath: null }).then(() => null, () => null);
-            })
-        : Promise.resolve(job.uploadedPath ?? null);
+      // Step 3: Transcribe each chunk via Groq Whisper and stitch the timestamps.
+      // Chunks already transcribed (before a refresh) aren't loaded again.
+      const done = job.results.length;
+      const chunks = await Promise.all(job.chunks.map(async (c, n) =>
+        ({ ...c, blob: n < done ? null : await getJobChunkBlob(id, n) })));
+      if (chunks.some((c, n) => n >= done && !c.blob)) {
+        throw new Error('The saved audio for this import is missing. Please import the file again.');
+      }
 
-      // Step 3: Transcribe each chunk via Groq Whisper and stitch the timestamps
-      const { text: transcribedText, segments } = await transcribeChunks(job.chunks, {
+      const { text: transcribedText, segments } = await transcribeChunks(chunks, {
         language: job.lang,
         done: job.results,
         signal,
@@ -1511,38 +1560,27 @@ async function runMediaJob(job, fileBlob, signal) {
         throw new Error('Transcription completed but returned empty text.');
       }
 
-      const uploadedPath = await uploadPromise;
       signal.throwIfAborted();
       const finalDuration = job.mediaDuration ?? (job.duration ? Math.round(job.duration) : null);
-      const updates = {
-        id,
-        content: transcribedText,
-        duration_sec: finalDuration,
-        metadata: {
-          source: job.sourceLoc === 'drive' ? 'google-drive' : 'local-upload',
-          file_name: fileName,
-          // The recording date embedded in the media beats the file's modified date.
-          captured_at: job.createdAt || job.fileDate || undefined,
-          transcript_segments: segments,
-        },
+      const metadata = {
+        source: job.sourceLoc === 'drive' ? 'google-drive' : 'local-upload',
+        file_name: fileName,
+        // The recording date embedded in the media beats the file's modified date.
+        captured_at: job.createdAt || job.fileDate || undefined,
+        transcript_segments: segments,
       };
-      if (uploadedPath) {
-        updates.file_url = uploadedPath;
-        updates.file_type = uploadBlob.type;
-        updates.metadata.storage_path = uploadedPath;
-      }
 
       // Update content in DB and local state
-      await updateMemory(updates);
-      // The transcript is saved, so the audio chunks are no longer needed.
-      job = await updateJob(id, { transcript: transcribedText, audio: null, chunks: null, results: null });
+      await updateMemory({ id, content: transcribedText, duration_sec: finalDuration, metadata });
+      // The transcript is saved, so the chunk audio is no longer needed.
+      job = await updateJob(id, { transcript: transcribedText, chunks: null, results: null });
+      await deleteJobChunks(id);
 
       const entryInList = entries.find(e => e.id === id);
       if (entryInList) {
         entryInList.content = transcribedText;
         entryInList.duration = finalDuration;
-        entryInList.metadata = updates.metadata;
-        if (uploadedPath && !entryInList.audioData) entryInList.audioData = uploadedPath;
+        entryInList.metadata = metadata;
         if (job.createdAt && job.createdAt !== entryInList.timestamp) {
           entryInList.timestamp = job.createdAt;
           sortEntries();
@@ -1574,9 +1612,8 @@ async function runMediaJob(job, fileBlob, signal) {
       card.querySelector('.summarize-btn')?.classList.add('hidden');
     }
 
-    // Step 5: Trigger embeddings generation and event extraction
-    triggerEmbedding(id, transcribedText);
-    extractAndSaveEvents(id, transcribedText, type === 'video' ? 'video' : 'audio');
+    // Step 5: Event extraction (embeddings come back, computed locally, in Phase 4)
+    extractAndSaveEvents(id, transcribedText, job.type === 'video' ? 'video' : 'audio');
 
     showToast(`Processing complete: "${fileName}"`, 'success');
 
@@ -1597,10 +1634,7 @@ async function runMediaJob(job, fileBlob, signal) {
   }
 }
 
-/**
- * On load, queue the media imports a previous page session left unfinished.
- * While a job still has its compressed audio, the card plays that local copy.
- */
+/** On load, queue the media imports a previous page session left unfinished. */
 async function resumeMediaJobs() {
   let jobs;
   try {
@@ -1610,22 +1644,10 @@ async function resumeMediaJobs() {
     return;
   }
 
-  let rerender = false;
   for (const job of jobs) {
-    const entry = entries.find(e => e.id === job.id);
-    // The memory was deleted (maybe on another device): drop the job.
-    if (!entry) {
-      await deleteJob(job.id).catch(() => {});
-      continue;
-    }
-    const localAudio = job.audio || job.chunks?.[0]?.blob;
-    if (!entry.audioData && localAudio) {
-      entry.audioData = URL.createObjectURL(localAudio);
-      entry.audioMimeType = localAudio.type;
-      rerender = true;
-    }
+    // The memory was deleted: drop the job.
+    if (!entries.some(e => e.id === job.id)) await deleteJob(job.id).catch(() => {});
   }
-  if (rerender) renderTimeline();
 
   for (const job of jobs) {
     if (!entries.some(e => e.id === job.id)) continue;

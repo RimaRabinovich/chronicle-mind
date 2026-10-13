@@ -32,6 +32,16 @@ Problems in the current code:
   - Still to do: an optional "keep original" setting.
   - Hosting note: Cloudflare Pages has a 25 MB per-file limit, smaller than the 32 MB wasm file; Vercel and Netlify are fine.
 
+- **Phase 3: DONE (tested in the app).**
+  - `src/crypto.js`: random 256-bit DEK, wrapped by a PBKDF2-SHA256 (600k) key from the passphrase. Records use AES-GCM with the label `"<store>:<id>"` as additional data, so ciphertexts can't be swapped between records. The recovery key is the DEK in Crockford base32 (13 groups of 4). A check value lets the app verify a recovery key.
+  - `src/store/`: `db.js` (IndexedDB `chronicle-vault-<uid>`, rows `{id, ts?, iv, ct}`), `vault.js` (create/unlock/recover/remember device), `memories.js` and `events.js` (same functions as `services/`), `media.js` (encrypted audio in 1 MB parts, referenced as `file_url = "media:<id>"`), and `migrateFromCloud.js`.
+  - `src/vaultScreen.js` with markup in `index.html`: after Google sign-in, either create a passphrase (then show the recovery key once, with copy/download and an "I saved it" checkbox) or unlock, or recover with the key and set a new passphrase. "Stay unlocked on this device" stores the non-extractable key in IndexedDB. Lock, Sign out and Delete account forget it and reload the page.
+  - Media imports and recordings now store audio encrypted locally instead of uploading it. The job store moved into the vault (encrypted, with chunk audio in the media store). The old plaintext `chronicle-mind-jobs-<uid>` database is deleted on load. Server embeddings (`triggerEmbedding`) are no longer called; Phase 4 adds local ones.
+  - Migration: if the cloud still has data, a banner offers "Move to this device". It copies memories (keeping their ids), events and audio, verifies every id locally, and then offers "Delete cloud copy" as a separate, confirmed step. `deleteUserFolder` now deletes every folder (it used to skip `video/` and anything past 100 files) and fails loudly instead of silently.
+  - Deviation from the plan: media lives in IndexedDB, not OPFS. Safari's OPFS write support is patchy, and IndexedDB stores the encrypted bytes fine.
+  - Tested in Node (WebCrypto plus fake-indexeddb): vault create/unlock/wrong passphrase/recover, records holding only id/ts/iv/ct, media round trip, jobs, and migration with stubbed Supabase.
+  - After the user verifies the migration: retire the `memories`, `events`, `embed`, `rag-query` and `upload` edge functions and drop the tables (manual).
+
 ## Phase 0: Fix Summarize (small, do first) [DONE]
 - In `handleSummarize` (`src/main.js:1366`), mirror the media path: set `sumBox.querySelector('.summary-text').textContent`, remove `hidden` from the box, and add `hidden` to the button. On error, restore the label to `+ Summary`.
 - Remove the dead "toggle if already has summary" branch (the button is hidden when a summary exists), or keep it consistent.
